@@ -17,8 +17,8 @@ Covers enforced Bash governance (hooks), advisory governance (skills), and MCP t
 ### Option A: Use the E2E setup script (recommended)
 
 ```bash
-cd /path/to/axonflow-enterprise
-COMMUNITY_REPO=/path/to/axonflow-enterprise ./scripts/setup-e2e-testing.sh community
+cd /Users/saurabhjain/Development/axonflow-enterprise
+COMMUNITY_REPO=/Users/saurabhjain/Development/axonflow-enterprise ./scripts/setup-e2e-testing.sh community
 source /tmp/axonflow-e2e-env.sh
 ```
 
@@ -34,7 +34,7 @@ export AXONFLOW_AUTH=""
 ### Load the plugin in Codex
 
 ```bash
-export CODEX_PLUGIN_ROOT=/path/to/axonflow-codex-plugin
+export CODEX_PLUGIN_ROOT=/Users/saurabhjain/Development/axonflow-codex-plugin
 # Load via @plugin-creator or Codex plugin system
 ```
 
@@ -107,7 +107,7 @@ export CODEX_PLUGIN_ROOT=/path/to/axonflow-codex-plugin
 ### Hook regression tests
 
 ```bash
-cd /path/to/axonflow-codex-plugin
+cd /Users/saurabhjain/Development/axonflow-codex-plugin
 ./tests/test-hooks.sh           # Mock server (offline, fast)
 ./tests/test-hooks.sh --live    # Live AxonFlow (requires running instance)
 ```
