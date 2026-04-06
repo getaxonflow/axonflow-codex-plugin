@@ -42,7 +42,7 @@ git clone https://github.com/getaxonflow/axonflow-codex-plugin.git
 ```bash
 export AXONFLOW_ENDPOINT=http://localhost:8080
 export AXONFLOW_AUTH=""  # empty for community mode
-export CODEX_PLUGIN_ROOT=/path/to/axonflow-codex-plugin
+export AXONFLOW_TIMEOUT_SECONDS=12  # optional override for remote deployments
 ```
 
 ### Hooks Setup
@@ -61,6 +61,14 @@ ln -sf "$(pwd)/hooks/hooks.json" ~/.codex/hooks.json
 Load via `@plugin-creator` or the Codex plugin system when marketplace opens.
 
 In community mode, no auth is needed.
+
+## Operational Tuning
+
+Use `AXONFLOW_TIMEOUT_SECONDS` to tune the hook HTTP timeout when AxonFlow is running remotely, behind a VPN, or over a higher-latency network path.
+
+- PreToolUse defaults to 8 seconds when unset
+- PostToolUse defaults to 5 seconds when unset
+- Setting `AXONFLOW_TIMEOUT_SECONDS` applies the same timeout to all hook HTTP calls
 
 ## Governance Model
 
@@ -137,6 +145,10 @@ axonflow-codex-plugin/
 - [Claude Code Plugin](https://github.com/getaxonflow/axonflow-claude-plugin) — sister plugin
 - [Cursor Plugin](https://github.com/getaxonflow/axonflow-cursor-plugin) — sister plugin
 - [OpenClaw Plugin](https://github.com/getaxonflow/axonflow-openclaw-plugin)
+
+## Telemetry
+
+This Codex plugin runs locally and does not send a direct telemetry ping to AxonFlow checkpoint services. Telemetry behavior for your self-hosted AxonFlow deployment and SDKs is documented separately at [docs.getaxonflow.com/docs/telemetry](https://docs.getaxonflow.com/docs/telemetry/).
 
 ## License
 
