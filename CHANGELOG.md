@@ -5,6 +5,8 @@
 ### Added
 
 - `AXONFLOW_TIMEOUT_SECONDS` environment variable to tune Codex hook HTTP timeouts for remote or high-latency AxonFlow deployments.
+- Plugin logo for marketplace and directory listings.
+- `SECURITY.md` with plugin-specific vulnerability reporting guidance.
 - Hybrid governance model: enforcement via hooks for terminal tool calls (`Bash`, `exec_command`, `shell`), advisory via skills for other tools
 - PreToolUse hook: evaluates terminal tool calls (`Bash`, `exec_command`, `shell`) against AxonFlow policies before execution (exit code 2 = block)
 - PostToolUse hook: records terminal tool executions in the audit trail and scans output for PII/secrets
