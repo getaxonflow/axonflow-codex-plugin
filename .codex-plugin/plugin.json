@@ -11,6 +11,6 @@
   "repository": "https://github.com/getaxonflow/axonflow-codex-plugin",
   "keywords": ["governance", "security", "pii", "audit", "compliance", "policy-enforcement"],
   "license": "MIT",
-  "skills": "skills",
-  "mcpServers": ".mcp.json"
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
 }
