@@ -84,7 +84,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             resp = {'jsonrpc': '2.0', 'id': body.get('id'), 'result': {'content': [{'type': 'text', 'text': result_text}]}}
         elif tool_name == 'check_output':
             msg = args.get('message', '')
-            if 'SSN' in msg or '123-45' in msg:
+            if 'BLOCKED_OUTPUT' in msg:
+                result_text = json.dumps({'allowed': False, 'block_reason': 'Output policy violation', 'policies_evaluated': 5})
+            elif 'SSN' in msg or '123-45' in msg:
                 result_text = json.dumps({'allowed': True, 'redacted_message': 'SSN: [REDACTED]', 'policies_evaluated': 5})
             else:
                 result_text = json.dumps({'allowed': True, 'policies_evaluated': 5})
@@ -217,6 +219,19 @@ if [ -n "$OUTPUT" ]; then
 else
     echo "  PASS: No PII warning (acceptable if scan returned no redaction)"
     ((PASS++)) || true
+fi
+
+echo ""
+echo "--- PostToolUse: blocked output → governance warning ---"
+OUTPUT=$(echo '{"tool_name":"Bash","tool_input":{"command":"cat data"},"tool_response":{"stdout":"BLOCKED_OUTPUT secret data","exitCode":0}}' | "$POST_HOOK" 2>/dev/null)
+EXIT_CODE=$?
+assert_eq "Exit code is 0" "0" "$EXIT_CODE"
+if [ -n "$OUTPUT" ]; then
+    assert_contains "Has governance warning" "$OUTPUT" "GOVERNANCE ALERT"
+    assert_contains "Has blocked reason" "$OUTPUT" "blocked by policy"
+else
+    echo "  FAIL: Expected governance warning for blocked output, got empty"
+    ((FAIL++)) || true
 fi
 
 echo ""
