@@ -13,9 +13,11 @@
 - MCP server integration with 6 governance tools: `check_policy`, `check_output`, `audit_tool_call`, `list_policies`, `get_policy_stats`, `search_audit_events`
 - 6 governance skills for advisory governance: pre-execute-check, post-execute-audit, pii-scan, governance-status, audit-search, policy-list
 - Skills support implicit activation when task matches skill description
+- PII write detection via improved skill descriptions — skills instruct agent to call `check_output` before file writes
 - Fail-open on network failure, fail-closed on auth/config errors
-- Regression tests with mock MCP server (`tests/test-hooks.sh`)
+- Regression tests with mock MCP server (`tests/test-hooks.sh`, 22 tests)
 - CI workflow: shellcheck, syntax check, regression tests, plugin structure validation
+- E2E testing playbook with 10 verified tests
 
 ### Changed
 
@@ -26,6 +28,10 @@
 - `AXONFLOW_ENDPOINT` — AxonFlow Agent URL (default: `http://localhost:8080`)
 - `AXONFLOW_AUTH` — Base64-encoded `clientId:clientSecret` for Basic auth
 - `AXONFLOW_TIMEOUT_SECONDS` — optional override for hook HTTP timeouts
+- MCP server configured in `~/.codex/config.toml` (TOML format, not `.mcp.json`)
+- Hooks placed at `~/.codex/hooks.json` (not inside the plugin directory)
+- Hooks feature must be enabled: `[features] codex_hooks = true` in `config.toml`
+- Plugin discovered via `$CWD/.agents/plugins/marketplace.json`, installed via `/plugins`
 
 ### Architecture
 
