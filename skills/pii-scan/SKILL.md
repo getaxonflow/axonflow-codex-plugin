@@ -1,15 +1,17 @@
 ---
 name: pii-scan
-description: Scan tool output for PII and secrets before including in responses. Use after tool calls that return data.
+description: Scan content for PII and secrets before writing files, sending messages, or including sensitive data in responses. Use before and after any operation that handles potentially sensitive content.
 ---
 
-After tool calls that return data (database queries, file reads, API responses), call the `check_output` MCP tool with:
+Before writing files or after tool calls that produce data, call the `check_output` MCP tool to scan for PII and secrets:
 
-- `connector_type`: the tool type (e.g., `codex.Bash`, `codex.mcp__postgres`)
-- `message`: the text content to scan
+- `connector_type`: `codex.Write` (for file writes), `codex.Bash` (for command output), or the appropriate tool type
+- `message`: the text content to scan — for file writes, scan the content being written
 
-If the response includes a `redacted_message`, use the redacted version in your response instead of the original.
+**Before file writes:** If the content being written contains PII (SSN, credit card, email, phone, etc.), `check_output` will return a `redacted_message`. Write the redacted version instead of the original, or warn the user that the content contains sensitive data.
 
-If the response shows `allowed: false`, do not include the output in your response.
+**After tool output:** If tool output contains PII, use the `redacted_message` version in your response instead of the original.
 
-Note: For Bash tool calls, PII scanning is handled automatically by the PostToolUse hook. Use this skill for other tool types.
+If the response shows `allowed: false`, do not write the file or include the output in your response.
+
+Note: For Bash/exec_command tool calls, PII scanning is handled automatically by the PostToolUse hook. This skill covers Write, Edit, and other non-Bash operations where hooks cannot intercept.
