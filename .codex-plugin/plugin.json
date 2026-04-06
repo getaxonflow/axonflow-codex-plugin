@@ -1,0 +1,16 @@
+{
+  "name": "axonflow",
+  "displayName": "AxonFlow Governance",
+  "description": "Policy enforcement, PII detection, and audit trails for OpenAI Codex. Enforces governance on Bash tool calls via hooks, provides advisory governance for other tools via skills, and records compliance-grade audit trails.",
+  "version": "0.1.0",
+  "author": {
+    "name": "AxonFlow",
+    "url": "https://getaxonflow.com"
+  },
+  "homepage": "https://docs.getaxonflow.com/docs/integration/codex/",
+  "repository": "https://github.com/getaxonflow/axonflow-codex-plugin",
+  "keywords": ["governance", "security", "pii", "audit", "compliance", "policy-enforcement"],
+  "license": "MIT",
+  "skills": "skills",
+  "mcpServers": ".mcp.json"
+}

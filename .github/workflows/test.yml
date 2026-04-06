@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check shell script syntax
+        run: |
+          for f in scripts/*.sh tests/*.sh; do
+            bash -n "$f" && echo "✓ $f" || exit 1
+          done
+
+      - name: Shellcheck
+        run: |
+          sudo apt-get install -y shellcheck
+          shellcheck scripts/*.sh tests/test-hooks.sh || true
+
+      - name: Validate plugin structure
+        run: |
+          test -f .codex-plugin/plugin.json || (echo "Missing plugin.json" && exit 1)
+          test -f .mcp.json || (echo "Missing .mcp.json" && exit 1)
+          test -f hooks/hooks.json || (echo "Missing hooks.json" && exit 1)
+          test -f LICENSE || (echo "Missing LICENSE" && exit 1)
+          # Validate skills exist
+          SKILL_COUNT=$(find skills -name "SKILL.md" | wc -l)
+          test "$SKILL_COUNT" -ge 6 || (echo "Expected 6+ skills, found $SKILL_COUNT" && exit 1)
+          echo "Plugin structure valid ($SKILL_COUNT skills)"
+
+      - name: Run hook regression tests (mock server)
+        run: bash tests/test-hooks.sh
