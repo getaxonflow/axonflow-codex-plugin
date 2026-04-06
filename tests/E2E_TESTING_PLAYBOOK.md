@@ -33,15 +33,41 @@ export AXONFLOW_AUTH=""
 
 ### Load the plugin in Codex
 
+Codex discovers plugins via marketplace.json files. Create one at `~/.agents/plugins/marketplace.json`:
+
 ```bash
-export CODEX_PLUGIN_ROOT=/Users/saurabhjain/Development/axonflow-codex-plugin
-# Load via @plugin-creator or Codex plugin system
+mkdir -p ~/.agents/plugins
+cat > ~/.agents/plugins/marketplace.json << 'EOF'
+{
+  "name": "axonflow-local",
+  "plugins": [
+    {
+      "name": "axonflow",
+      "source": {
+        "source": "local",
+        "path": "/Users/saurabhjain/Development/axonflow-codex-plugin"
+      }
+    }
+  ]
+}
+EOF
 ```
 
-**Verify on startup:**
-- Hooks loaded for Bash tool
-- MCP server "axonflow" connected with `6 tools`
-- 6 skills available
+Update `hooks/hooks.json` script paths to match your clone location (hooks use absolute paths since Codex doesn't provide a plugin root env var).
+
+Then restart Codex:
+
+```bash
+codex
+```
+
+**Verify after launch:**
+
+```
+What plugins are loaded?
+```
+
+Expected: AxonFlow plugin listed alongside GitHub plugin.
 
 ---
 

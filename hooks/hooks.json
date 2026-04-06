@@ -1,5 +1,5 @@
 {
-  "description": "AxonFlow governance hooks — automatic policy enforcement for Bash tool calls",
+  "description": "AxonFlow governance hooks — automatic policy enforcement for Bash tool calls. Update paths after cloning.",
   "hooks": {
     "PreToolUse": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CODEX_PLUGIN_ROOT}/scripts/pre-tool-check.sh",
+            "command": "/Users/saurabhjain/Development/axonflow-codex-plugin/scripts/pre-tool-check.sh",
             "timeout": 10
           }
         ]
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CODEX_PLUGIN_ROOT}/scripts/post-tool-audit.sh",
+            "command": "/Users/saurabhjain/Development/axonflow-codex-plugin/scripts/post-tool-audit.sh",
             "timeout": 10
           }
         ]
