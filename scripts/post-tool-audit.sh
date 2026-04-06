@@ -75,12 +75,12 @@ TRUNCATED_OUTPUT=$(echo "$TOOL_RESPONSE" | jq -c '.' 2>/dev/null | cut -c1-500 |
 # 2. Scan tool output for PII/secrets (synchronous — returns context if PII found)
 OUTPUT_TEXT=""
 case "$TOOL_NAME" in
-  Bash)
-    OUTPUT_TEXT=$(echo "$TOOL_RESPONSE" | jq -r '.stdout // empty' 2>/dev/null || echo "")
+  Bash|exec_command|shell)
+    OUTPUT_TEXT=$(echo "$TOOL_RESPONSE" | jq -r '.stdout // .output // empty' 2>/dev/null || echo "")
     # If stdout is empty but command contains a redirect (echo ... > file),
     # scan the command itself — the PII is in the input, not the output.
     if [ -z "$OUTPUT_TEXT" ] || [ "$OUTPUT_TEXT" = "null" ]; then
-      COMMAND=$(echo "$TOOL_INPUT" | jq -r '.command // empty' 2>/dev/null || echo "")
+      COMMAND=$(echo "$TOOL_INPUT" | jq -r '.cmd // .command // empty' 2>/dev/null || echo "")
       if echo "$COMMAND" | grep -qE '>>?\s*\S' ; then
         OUTPUT_TEXT="$COMMAND"
       fi

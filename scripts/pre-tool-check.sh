@@ -46,8 +46,8 @@ CONNECTOR_TYPE="codex.${TOOL_NAME}"
 
 # Extract the statement to evaluate based on tool type
 case "$TOOL_NAME" in
-  Bash)
-    STATEMENT=$(echo "$TOOL_INPUT" | jq -r '.command // empty')
+  Bash|exec_command|shell)
+    STATEMENT=$(echo "$TOOL_INPUT" | jq -r '.cmd // .command // empty')
     ;;
   Write)
     FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
