@@ -147,8 +147,10 @@ assert_empty "No output (silent allow)" "$OUTPUT"
 echo ""
 echo "--- PreToolUse: allowed:false → exit 2 (block) ---"
 STDERR_FILE=$(mktemp)
+set +e
 OUTPUT=$(echo '{"tool_name":"Bash","tool_input":{"command":"BLOCKED rm -rf /"}}' | "$PRE_HOOK" 2>"$STDERR_FILE")
 EXIT_CODE=$?
+set -e
 STDERR_OUT=$(cat "$STDERR_FILE")
 rm -f "$STDERR_FILE"
 assert_eq "Exit code is 2 (block)" "2" "$EXIT_CODE"
@@ -161,8 +163,10 @@ if [ "${1:-}" = "--live" ]; then
     ((PASS++)) || true
 else
     STDERR_FILE=$(mktemp)
+    set +e
     OUTPUT=$(echo '{"tool_name":"Bash","tool_input":{"command":"AUTH_ERROR test"}}' | "$PRE_HOOK" 2>"$STDERR_FILE")
     EXIT_CODE=$?
+    set -e
     STDERR_OUT=$(cat "$STDERR_FILE")
     rm -f "$STDERR_FILE"
     assert_eq "Exit code is 2 (block)" "2" "$EXIT_CODE"
