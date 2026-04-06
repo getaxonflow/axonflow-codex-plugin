@@ -4,14 +4,14 @@ Policy enforcement, PII detection, and audit trails for OpenAI Codex. Enforces g
 
 ## How It Works
 
-**Bash tool calls** are governed automatically via hooks:
+**Terminal tool calls** (Bash, exec_command, shell) are governed automatically via hooks:
 
 ```
-Codex selects Bash tool
+Codex selects terminal tool (Bash / exec_command / shell)
     │
     ▼
 PreToolUse hook fires automatically
-    │ → check_policy("codex.Bash", "rm -rf /")
+    │ → check_policy("codex.exec_command", "rm -rf /")
     │
     ├─ BLOCKED (exit 2) → Codex receives denial, command never runs
     │
@@ -45,6 +45,19 @@ export AXONFLOW_AUTH=""  # empty for community mode
 export CODEX_PLUGIN_ROOT=/path/to/axonflow-codex-plugin
 ```
 
+### Hooks Setup
+
+The `hooks/hooks.json` file uses relative paths (`./scripts/...`). To activate hooks, copy the file to your Codex config directory and update the paths to point to your clone location:
+
+```bash
+# Option 1: Copy and update paths to absolute
+cp hooks/hooks.json ~/.codex/hooks.json
+# Then edit ~/.codex/hooks.json to replace ./scripts/ with /full/path/to/axonflow-codex-plugin/scripts/
+
+# Option 2: Symlink so Codex runs from the plugin directory
+ln -sf "$(pwd)/hooks/hooks.json" ~/.codex/hooks.json
+```
+
 Load via `@plugin-creator` or the Codex plugin system when marketplace opens.
 
 In community mode, no auth is needed.
@@ -53,9 +66,9 @@ In community mode, no auth is needed.
 
 | Governance Type | Tool | Mechanism | Enforcement |
 |---|---|---|---|
-| **Enforcement** | Bash | PreToolUse hook | Yes — exit code 2 blocks execution |
+| **Enforcement** | Bash, exec_command, shell | PreToolUse hook | Yes — exit code 2 blocks execution |
 | **Advisory** | Write, Edit, MCP tools | Skills instruct agent to call check_policy | Agent decides — skills guide but cannot force |
-| **Audit** | All governed tools | PostToolUse hook (Bash) + skills (others) | Automatic for Bash, skill-guided for others |
+| **Audit** | All governed tools | PostToolUse hook (terminal) + skills (others) | Automatic for terminal tools, skill-guided for others |
 
 ## MCP Tools
 

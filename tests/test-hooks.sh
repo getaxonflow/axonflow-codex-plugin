@@ -147,6 +147,13 @@ assert_eq "Exit code is 0" "0" "$EXIT_CODE"
 assert_empty "No output (silent allow)" "$OUTPUT"
 
 echo ""
+echo "--- PreToolUse: exec_command tool_name → allow ---"
+OUTPUT=$(echo '{"tool_name":"exec_command","tool_input":{"command":"echo hello"}}' | "$PRE_HOOK" 2>/dev/null)
+EXIT_CODE=$?
+assert_eq "Exit code is 0" "0" "$EXIT_CODE"
+assert_empty "No output (silent allow)" "$OUTPUT"
+
+echo ""
 echo "--- PreToolUse: allowed:false → exit 2 (block) ---"
 STDERR_FILE=$(mktemp)
 set +e
