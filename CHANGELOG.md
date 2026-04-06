@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Security
+
+- Pinned all GitHub Actions to immutable commit SHAs to prevent supply chain attacks.
+- Added Dependabot configuration for weekly GitHub Actions updates.
+
 ## [0.1.0] - 2026-04-06
 
 ### Added
