@@ -71,10 +71,30 @@ class Handler(http.server.BaseHTTPRequestHandler):
         args = params.get('arguments', {})
         statement = args.get('statement', '')
 
-        # Simulate different responses based on statement content
-        if 'AUTH_ERROR' in statement:
-            # JSON-RPC auth error
+        # Simulate different responses based on statement content.
+        # New in v0.2.1: additional trigger strings for the v0.2.0 decision
+        # matrix that went untested — see tests/test-hooks.sh comments on
+        # each FAIL_CLOSED_* and FAIL_OPEN_* case below.
+        if 'FAIL_CLOSED_AUTH' in statement or 'AUTH_ERROR' in statement:
             resp = {'jsonrpc': '2.0', 'id': body.get('id'), 'error': {'code': -32001, 'message': 'Authentication failed'}}
+        elif 'FAIL_CLOSED_METHOD' in statement:
+            resp = {'jsonrpc': '2.0', 'id': body.get('id'), 'error': {'code': -32601, 'message': 'Method not found'}}
+        elif 'FAIL_CLOSED_PARAMS' in statement:
+            resp = {'jsonrpc': '2.0', 'id': body.get('id'), 'error': {'code': -32602, 'message': 'Invalid params'}}
+        elif 'FAIL_OPEN_INTERNAL' in statement:
+            resp = {'jsonrpc': '2.0', 'id': body.get('id'), 'error': {'code': -32603, 'message': 'Internal error'}}
+        elif 'FAIL_OPEN_PARSE' in statement:
+            resp = {'jsonrpc': '2.0', 'id': body.get('id'), 'error': {'code': -32700, 'message': 'Parse error'}}
+        elif 'FAIL_OPEN_UNKNOWN' in statement:
+            resp = {'jsonrpc': '2.0', 'id': body.get('id'), 'error': {'code': -99999, 'message': 'Unknown error code'}}
+        elif 'FAIL_OPEN_5XX' in statement:
+            # HTTP 500 with well-formed body (still fails open because the
+            # JSON-RPC top-level has no .error and no .result.content we recognize).
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(b'{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal server error\"}}')
+            return
         elif 'BLOCKED' in statement:
             # Policy blocks the command
             result_text = json.dumps({'allowed': False, 'block_reason': 'Test policy violation', 'policies_evaluated': 10})
@@ -190,6 +210,78 @@ OUTPUT=$(echo '{"tool_name":"Bash","tool_input":{"command":"echo test"}}' | AXON
 EXIT_CODE=$?
 assert_eq "Exit code is 0 (fail-open)" "0" "$EXIT_CODE"
 assert_empty "No output (silent allow on network failure)" "$OUTPUT"
+
+echo ""
+echo "--- PreToolUse: JSON-RPC -32601 method not found → exit 2 (block) ---"
+# v0.2.1: decision matrix coverage. -32601 indicates plugin/agent version
+# mismatch — operator-fixable, so fail closed.
+if [ "${1:-}" = "--live" ]; then
+    echo "  SKIP: matrix trigger only works with mock server"
+    ((PASS++)) || true
+else
+    STDERR_FILE=$(mktemp)
+    set +e
+    echo '{"tool_name":"Bash","tool_input":{"command":"FAIL_CLOSED_METHOD test"}}' | "$PRE_HOOK" 2>"$STDERR_FILE"
+    EXIT_CODE=$?
+    set -e
+    STDERR_OUT=$(cat "$STDERR_FILE")
+    rm -f "$STDERR_FILE"
+    assert_eq "Exit code is 2 (block)" "2" "$EXIT_CODE"
+    assert_contains "Has governance blocked on stderr" "$STDERR_OUT" "governance blocked"
+fi
+
+echo ""
+echo "--- PreToolUse: JSON-RPC -32602 invalid params → exit 2 (block) ---"
+# v0.2.1: -32602 indicates plugin bug. Fail closed so operator catches it.
+if [ "${1:-}" = "--live" ]; then
+    echo "  SKIP: matrix trigger only works with mock server"
+    ((PASS++)) || true
+else
+    STDERR_FILE=$(mktemp)
+    set +e
+    echo '{"tool_name":"Bash","tool_input":{"command":"FAIL_CLOSED_PARAMS test"}}' | "$PRE_HOOK" 2>"$STDERR_FILE"
+    EXIT_CODE=$?
+    set -e
+    rm -f "$STDERR_FILE"
+    assert_eq "Exit code is 2 (block)" "2" "$EXIT_CODE"
+fi
+
+echo ""
+echo "--- PreToolUse: JSON-RPC -32603 internal error → exit 0 (fail-open) ---"
+# v0.2.1: -32603 is a server-side fault, not operator-fixable. Fail open.
+if [ "${1:-}" = "--live" ]; then
+    echo "  SKIP: matrix trigger only works with mock server"
+    ((PASS++)) || true
+else
+    OUTPUT=$(echo '{"tool_name":"Bash","tool_input":{"command":"FAIL_OPEN_INTERNAL test"}}' | "$PRE_HOOK" 2>/dev/null)
+    EXIT_CODE=$?
+    assert_eq "Exit code is 0 (fail-open on -32603)" "0" "$EXIT_CODE"
+    assert_empty "No output (silent allow on -32603)" "$OUTPUT"
+fi
+
+echo ""
+echo "--- PreToolUse: JSON-RPC -32700 parse error → exit 0 (fail-open) ---"
+# v0.2.1: -32700 is transient; likely garbled response. Fail open.
+if [ "${1:-}" = "--live" ]; then
+    echo "  SKIP: matrix trigger only works with mock server"
+    ((PASS++)) || true
+else
+    OUTPUT=$(echo '{"tool_name":"Bash","tool_input":{"command":"FAIL_OPEN_PARSE test"}}' | "$PRE_HOOK" 2>/dev/null)
+    EXIT_CODE=$?
+    assert_eq "Exit code is 0 (fail-open on -32700)" "0" "$EXIT_CODE"
+fi
+
+echo ""
+echo "--- PreToolUse: JSON-RPC unknown error code → exit 0 (fail-open) ---"
+# v0.2.1: default-allow on any unknown error code.
+if [ "${1:-}" = "--live" ]; then
+    echo "  SKIP: matrix trigger only works with mock server"
+    ((PASS++)) || true
+else
+    OUTPUT=$(echo '{"tool_name":"Bash","tool_input":{"command":"FAIL_OPEN_UNKNOWN test"}}' | "$PRE_HOOK" 2>/dev/null)
+    EXIT_CODE=$?
+    assert_eq "Exit code is 0 (fail-open on unknown code)" "0" "$EXIT_CODE"
+fi
 
 echo ""
 echo "--- PreToolUse: empty tool_name → allow ---"
