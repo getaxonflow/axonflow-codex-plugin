@@ -1,10 +1,16 @@
 # Changelog
 
-## [0.2.0] - 2026-04-09
+## [0.2.1] - Release Pending (2026-04-09)
+
+### Added
+
+- **Decision-matrix regression tests** for the v0.2.0 hook fail-open/fail-closed behavior. The v0.2.0 release only added a single stderr-string assertion update; the 5 new branches introduced (curl timeout, empty body, -32603, -32700, -32601, -32602, unknown code) were completely untested. This release adds mock-server cases for every branch so the decision matrix is now covered end-to-end.
+
+## [0.2.0] - 2026-04-08
 
 ### Changed
 
-- **Hook fail-open/fail-closed hardening (issue #1545 Direction 3).** `scripts/pre-tool-check.sh` now distinguishes curl exit code (network failure) from HTTP success with an error body. Fail-closed (exit 2, block tool) only on operator-fixable JSON-RPC errors: auth failures (-32001), method-not-found (-32601), and invalid-params (-32602). Fail-open (exit 0, allow) on everything else: curl timeouts/DNS failures/connection refused, empty response, server-internal errors (-32603), parse errors (-32700), and unknown error codes. Prevents transient governance infrastructure issues from blocking legitimate dev workflows while still catching broken configurations.
+- **Hook fail-open/fail-closed hardening.** `scripts/pre-tool-check.sh` now distinguishes curl exit code (network failure) from HTTP success with an error body. Fail-closed (exit 2, block tool) only on operator-fixable JSON-RPC errors: auth failures (-32001), method-not-found (-32601), and invalid-params (-32602). Fail-open (exit 0, allow) on everything else: curl timeouts/DNS failures/connection refused, empty response, server-internal errors (-32603), parse errors (-32700), and unknown error codes. Prevents transient governance infrastructure issues from blocking legitimate dev workflows while still catching broken configurations.
 
 ### Added
 
