@@ -179,7 +179,7 @@ else
     STDERR_OUT=$(cat "$STDERR_FILE")
     rm -f "$STDERR_FILE"
     assert_eq "Exit code is 2 (block)" "2" "$EXIT_CODE"
-    assert_contains "Has governance error on stderr" "$STDERR_OUT" "governance error"
+    assert_contains "Has governance blocked on stderr" "$STDERR_OUT" "governance blocked"
 fi
 
 echo ""
