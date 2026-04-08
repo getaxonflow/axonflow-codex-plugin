@@ -79,8 +79,12 @@ if [ -z "$STATEMENT" ] || [ "$STATEMENT" = "null" ] || [ "$STATEMENT" = "{}" ]; 
   exit 0
 fi
 
-# Call AxonFlow check_policy via MCP server
-RESPONSE=$(curl -s --max-time "$REQUEST_TIMEOUT_SECONDS" -X POST "${ENDPOINT}/api/v1/mcp-server" \
+# Call AxonFlow check_policy via MCP server.
+#
+# Issue #1545 Direction 3: fail OPEN on any network-level failure (timeout,
+# DNS failure, connection refused, 5xx). Only auth/config errors reported
+# by AxonFlow fail closed (see the JSONRPC_ERROR handling below).
+RESPONSE=$(curl -sS --max-time "$REQUEST_TIMEOUT_SECONDS" -X POST "${ENDPOINT}/api/v1/mcp-server" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json" \
   "${AUTH_HEADER[@]}" \
@@ -99,25 +103,49 @@ RESPONSE=$(curl -s --max-time "$REQUEST_TIMEOUT_SECONDS" -X POST "${ENDPOINT}/ap
           operation: "execute"
         }
       }
-    }')" 2>/dev/null || echo "")
+    }')" 2>/dev/null)
+CURL_EXIT=$?
 
-# If AxonFlow is unreachable (empty response = network failure), fail-open
+# Any curl-level failure (exit != 0) means the network call failed —
+# timeout, DNS failure, connection refused, TCP reset. Fail open.
+if [ "$CURL_EXIT" -ne 0 ]; then
+  exit 0
+fi
+
+# Empty body from an otherwise-successful curl should also fail open
+# (ambiguous: could be 204 No Content, could be a weird proxy).
 if [ -z "$RESPONSE" ]; then
   exit 0
 fi
 
-# Check for JSON-RPC error responses (auth failure, server error, etc.)
-# Fail CLOSED on auth/config errors to prevent silent governance bypass.
+# Check for JSON-RPC error responses and apply the fail-open / fail-closed
+# policy from issue #1545 Direction 3:
+#
+#   Fail CLOSED only on auth/config errors — where the operator can actually
+#   fix the problem — so a broken governance setup can never be silently
+#   bypassed. Network errors, server-internal errors, parse errors, and
+#   timeouts all fail OPEN to avoid blocking legitimate dev workflows on
+#   transient infrastructure issues.
+#
+#   Auth errors (-32001):       BLOCK — operator must fix AXONFLOW_AUTH
+#   Method not found (-32601):  BLOCK — plugin version mismatch with agent
+#   Invalid params (-32602):    BLOCK — plugin bug, operator should upgrade
+#   Parse errors (-32700):      ALLOW — transient
+#   Internal errors (-32603):   ALLOW — server-side fault, not operator's
+#   Everything else:            ALLOW — unknown failure, default to allow
 JSONRPC_ERROR=$(echo "$RESPONSE" | jq -r '.error.message // empty' 2>/dev/null || echo "")
 if [ -n "$JSONRPC_ERROR" ]; then
   JSONRPC_CODE=$(echo "$RESPONSE" | jq -r '.error.code // 0' 2>/dev/null || echo "0")
-  # Auth errors (-32001) and internal errors (-32603) = block
-  # Parse errors (-32700) = allow (could be transient)
-  if [ "$JSONRPC_CODE" != "-32700" ]; then
-    echo "AxonFlow governance error: ${JSONRPC_ERROR}. Fix AxonFlow configuration to restore tool access." >&2
-    exit 2
-  fi
-  exit 0
+  case "$JSONRPC_CODE" in
+    -32001|-32601|-32602)
+      echo "AxonFlow governance blocked: ${JSONRPC_ERROR} (code ${JSONRPC_CODE}). Fix AxonFlow configuration to restore tool access." >&2
+      exit 2
+      ;;
+    *)
+      # Transient or server-side — fail open.
+      exit 0
+      ;;
+  esac
 fi
 
 # Parse the MCP response to get the tool result
