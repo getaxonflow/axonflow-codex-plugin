@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.3.0] - 2026-04-16
+
+### Added
+
+- **Anonymous telemetry ping** on first hook invocation. Sends plugin version, OS, architecture, bash version, and AxonFlow platform version to `checkpoint.getaxonflow.com`. No PII, no tool arguments, no policy data. Fires once per install (stamp file guard at `$HOME/.cache/axonflow/codex-plugin-telemetry-sent`). Opt out with `DO_NOT_TRACK=1` or `AXONFLOW_TELEMETRY=off`.
+- **`marketplace.json`** — marketplace metadata file for plugin distribution readiness.
+
+### Fixed
+
+- **UTF-8 safe content truncation.** Write and Edit content extraction now uses character-level `cut -c1-2000` instead of byte-level `head -c 2000`. Prevents splitting multi-byte UTF-8 sequences at the truncation boundary.
+- **Consistent curl error reporting.** `post-tool-audit.sh` now uses `-sS` (silent + show errors) matching `pre-tool-check.sh`.
+- **Corrected "Cursor" references in comments** — 5 copy-paste errors from the Cursor plugin that referenced "Cursor" instead of "Codex" in pre-tool-check.sh, post-tool-audit.sh, and mcp-auth-headers.sh.
+
+### Changed
+
+- **Hook timeout increased from 10s to 15s.** Provides sufficient buffer above the 8s default curl timeout for bash overhead and telemetry.
+
+### Security
+
+- Updated SECURITY.md timestamp to April 2026.
+
 ## [0.2.1] - 2026-04-10
 
 ### Added
