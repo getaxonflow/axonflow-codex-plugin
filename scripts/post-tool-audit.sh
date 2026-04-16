@@ -3,10 +3,10 @@
 # Adapted for OpenAI Codex from the Claude Code plugin.
 #
 # 1. Records tool execution in AxonFlow audit trail (fire-and-forget, background)
-# 2. Scans tool output for PII/secrets (synchronous — returns context to Cursor)
+# 2. Scans tool output for PII/secrets (synchronous — returns context to Codex)
 #
 # This script is best-effort: failures never block tool execution.
-# Cursor PostToolUse always exits 0 — never blocks.
+# Codex PostToolUse always exits 0 — never blocks.
 
 # Fail-open: if jq/curl not available, exit silently
 if ! command -v jq &>/dev/null || ! command -v curl &>/dev/null; then
@@ -45,7 +45,7 @@ TRUNCATED_OUTPUT=$(echo "$TOOL_RESPONSE" | jq -c '.' 2>/dev/null | cut -c1-500 |
 
 # 1. Record audit entry (fire-and-forget, background)
 (
-  curl -s --max-time "$REQUEST_TIMEOUT_SECONDS" -X POST "${ENDPOINT}/api/v1/mcp-server" \
+  curl -sS --max-time "$REQUEST_TIMEOUT_SECONDS" -X POST "${ENDPOINT}/api/v1/mcp-server" \
     -H "Content-Type: application/json" \
     -H "Accept: application/json" \
     "${AUTH_HEADER[@]}" \
@@ -102,7 +102,7 @@ case "$TOOL_NAME" in
 esac
 
 if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
-  SCAN_RESPONSE=$(curl -s --max-time "$REQUEST_TIMEOUT_SECONDS" -X POST "${ENDPOINT}/api/v1/mcp-server" \
+  SCAN_RESPONSE=$(curl -sS --max-time "$REQUEST_TIMEOUT_SECONDS" -X POST "${ENDPOINT}/api/v1/mcp-server" \
     -H "Content-Type: application/json" \
     -H "Accept: application/json" \
     "${AUTH_HEADER[@]}" \

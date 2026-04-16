@@ -5,7 +5,7 @@
 # Reads tool_name and tool_input from stdin (JSON).
 # Calls AxonFlow check_policy via the MCP server endpoint.
 #
-# Cursor hook exit codes:
+# Codex hook exit codes:
 #   Exit 0 = allow (no opinion)
 #   Exit 2 = block (tool execution prevented)
 #   Other non-zero = non-blocking error (tool proceeds)
@@ -31,6 +31,10 @@ if [ -n "$AUTH" ]; then
   AUTH_HEADER=(-H "Authorization: Basic $AUTH")
 fi
 
+# Telemetry: fire-and-forget on first invocation (stamp file guard inside script)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+"${SCRIPT_DIR}/telemetry-ping.sh" </dev/null &
+
 # Read hook input from stdin
 INPUT=$(cat)
 
@@ -42,7 +46,7 @@ if [ -z "$TOOL_NAME" ]; then
   exit 0
 fi
 
-# Derive connector type: cursor.{ToolName}
+# Derive connector type: codex.{ToolName}
 CONNECTOR_TYPE="codex.${TOOL_NAME}"
 
 # Extract the statement to evaluate based on tool type
@@ -52,12 +56,12 @@ case "$TOOL_NAME" in
     ;;
   Write)
     FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
-    CONTENT=$(echo "$TOOL_INPUT" | jq -r '.content // empty' | head -c 2000)
+    CONTENT=$(echo "$TOOL_INPUT" | jq -r '.content // empty' | cut -c1-2000)
     STATEMENT="${FILE_PATH}"$'\n'"${CONTENT}"
     ;;
   Edit)
     FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
-    NEW_STRING=$(echo "$TOOL_INPUT" | jq -r '.new_string // empty' | head -c 2000)
+    NEW_STRING=$(echo "$TOOL_INPUT" | jq -r '.new_string // empty' | cut -c1-2000)
     STATEMENT="${FILE_PATH}"$'\n'"${NEW_STRING}"
     ;;
   NotebookEdit)
@@ -188,7 +192,7 @@ if [ "$ALLOWED" = "false" ]; then
         }
       }')" > /dev/null 2>&1 &
 
-  # Cursor: exit 2 = block tool execution. Reason on stderr.
+  # Codex: exit 2 = block tool execution. Reason on stderr.
   echo "AxonFlow policy violation: ${BLOCK_REASON} (${POLICIES_EVALUATED} policies evaluated)" >&2
   exit 2
 fi

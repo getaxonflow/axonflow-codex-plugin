@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Generate auth headers for the AxonFlow MCP server connection.
-# Called by Claude Code's headersHelper at MCP session start.
+# Called by the MCP harness's headersHelper at MCP session start.
 #
 # Community mode (AXONFLOW_AUTH empty): no auth header needed
 # Enterprise mode (AXONFLOW_AUTH set):  Basic auth with base64-encoded clientId:clientSecret
