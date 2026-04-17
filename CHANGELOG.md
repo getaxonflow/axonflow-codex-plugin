@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.4.0] - 2026-04-17 — Plugin Batch 1: Richer Approval Context
+## [0.4.0] - 2026-04-18
 
 ### Added
 
@@ -17,8 +17,7 @@
 
 ### Compatibility
 
-Companion to platform v7.1.0 (ADR-042 + ADR-043) and SDKs v5.4.0 /
-v6.4.0. Back-compatible.
+Companion to platform v7.1.0 and SDKs v5.4.0 / v6.4.0. Back-compatible.
 
 ## [0.3.0] - 2026-04-16
 
