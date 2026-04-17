@@ -164,6 +164,13 @@ ALLOWED=$(echo "$TOOL_RESULT" | jq -r 'if .allowed == false then "false" else "t
 BLOCK_REASON=$(echo "$TOOL_RESULT" | jq -r '.block_reason // empty' 2>/dev/null || echo "")
 POLICIES_EVALUATED=$(echo "$TOOL_RESULT" | jq -r '.policies_evaluated // 0' 2>/dev/null || echo "0")
 
+# Plugin Batch 1 (ADR-042 + ADR-043): richer block context surfaced when
+# the platform is v7.1.0+. All fields are optional; absent on older platforms.
+DECISION_ID=$(echo "$TOOL_RESULT" | jq -r '.decision_id // empty' 2>/dev/null || echo "")
+RISK_LEVEL=$(echo "$TOOL_RESULT" | jq -r '.risk_level // empty' 2>/dev/null || echo "")
+OVERRIDE_AVAILABLE=$(echo "$TOOL_RESULT" | jq -r '.override_available // false' 2>/dev/null || echo "false")
+OVERRIDE_EXISTING_ID=$(echo "$TOOL_RESULT" | jq -r '.override_existing_id // empty' 2>/dev/null || echo "")
+
 if [ "$ALLOWED" = "false" ]; then
   # Record the blocked attempt in the audit trail (fire-and-forget)
   curl -s --max-time "$REQUEST_TIMEOUT_SECONDS" -X POST "${ENDPOINT}/api/v1/mcp-server" \
@@ -193,7 +200,23 @@ if [ "$ALLOWED" = "false" ]; then
       }')" > /dev/null 2>&1 &
 
   # Codex: exit 2 = block tool execution. Reason on stderr.
-  echo "AxonFlow policy violation: ${BLOCK_REASON} (${POLICIES_EVALUATED} policies evaluated)" >&2
+  # Plugin Batch 1: append richer context when the platform surfaces it.
+  CONTEXT_SUFFIX=""
+  if [ -n "$DECISION_ID" ]; then
+    CONTEXT_SUFFIX=" [decision: $DECISION_ID"
+    if [ -n "$RISK_LEVEL" ]; then
+      CONTEXT_SUFFIX="$CONTEXT_SUFFIX, risk: $RISK_LEVEL"
+    fi
+    if [ "$OVERRIDE_AVAILABLE" = "true" ]; then
+      if [ -n "$OVERRIDE_EXISTING_ID" ]; then
+        CONTEXT_SUFFIX="$CONTEXT_SUFFIX, active override: $OVERRIDE_EXISTING_ID"
+      else
+        CONTEXT_SUFFIX="$CONTEXT_SUFFIX, override available via explain_decision MCP tool"
+      fi
+    fi
+    CONTEXT_SUFFIX="$CONTEXT_SUFFIX]"
+  fi
+  echo "AxonFlow policy violation: ${BLOCK_REASON} (${POLICIES_EVALUATED} policies evaluated)${CONTEXT_SUFFIX}" >&2
   exit 2
 fi
 

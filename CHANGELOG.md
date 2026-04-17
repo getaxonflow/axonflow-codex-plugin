@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.4.0] - 2026-04-17 — Plugin Batch 1: Richer Approval Context
+
+### Added
+
+- **Richer block reason surfaced to Codex on exec_command blocks.** When
+  the AxonFlow platform is v7.1.0+, the stderr message accompanying the
+  `exit 2` block now includes `[decision: <id>, risk: <level>, active
+  override: <ov>]` or a pointer to the `explain_decision` MCP tool. Older
+  platforms see the prior v0.3.0 message — fields are omitted when not
+  returned.
+- **Access to platform MCP tools** `explain_decision`, `create_override`,
+  `delete_override`, `list_overrides` — available via the agent's MCP
+  server when connected to a v7.1.0+ platform. Codex's existing `audit-search`
+  skill pattern applies analogously for these new tools.
+
+### Compatibility
+
+Companion to platform v7.1.0 (ADR-042 + ADR-043) and SDKs v5.4.0 /
+v6.4.0. Back-compatible.
+
 ## [0.3.0] - 2026-04-16
 
 ### Added
