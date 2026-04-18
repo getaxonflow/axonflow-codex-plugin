@@ -439,16 +439,22 @@ TELEMETRY_SCRIPT="$PLUGIN_DIR/scripts/telemetry-ping.sh"
 ORIGINAL_HOME="$HOME"
 ORIGINAL_DNT="${DO_NOT_TRACK:-}"
 
+# CRITICAL: Also forces AXONFLOW_CHECKPOINT_URL to the local mock port.
+# Without this, any test that runs TELEMETRY_SCRIPT without its own
+# explicit override would fire a REAL ping to checkpoint.getaxonflow.com
+# — which shows up in prod digests as noise.
 setup_telemetry_test() {
     TEST_HOME=$(mktemp -d)
     export HOME="$TEST_HOME"
     unset DO_NOT_TRACK 2>/dev/null || true
     unset AXONFLOW_TELEMETRY 2>/dev/null || true
+    export AXONFLOW_CHECKPOINT_URL="http://127.0.0.1:$MOCK_PORT/v1/ping"
     echo "" > "$TELEMETRY_CAPTURE_FILE" 2>/dev/null || true
 }
 
 teardown_telemetry_test() {
     export HOME="$ORIGINAL_HOME"
+    unset AXONFLOW_CHECKPOINT_URL
     if [ -n "${ORIGINAL_DNT:-}" ]; then
         export DO_NOT_TRACK="$ORIGINAL_DNT"
     fi
