@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Smoke E2E scenario** at `tests/e2e/smoke-block-context.sh` — runs
+  `pre-tool-check.sh` against a reachable AxonFlow stack and asserts the
+  hook exits 2 with `AxonFlow policy violation` + Plugin Batch 1
+  richer-context markers on stderr. Exits 0 (`SKIP:`) when no stack is
+  reachable.
+- **`.github/workflows/smoke-e2e.yml`** — `workflow_dispatch` + PR label
+  (`run-e2e`) triggered job running the smoke scenario. Off by default
+  so normal PRs don't need a live stack.
+
+Full install-and-use matrix lives in `axonflow-enterprise/tests/e2e/plugin-batch-1/codex-install/`.
+
 ## [0.4.0] - 2026-04-18
 
 ### Added

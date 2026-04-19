@@ -138,6 +138,31 @@ axonflow-codex-plugin/
 └── .github/workflows/test.yml
 ```
 
+## Testing
+
+Unit tests (hook regression, mock server — no live stack needed):
+
+```bash
+./tests/test-hooks.sh
+```
+
+Smoke E2E (requires a live AxonFlow stack at `localhost:8080`):
+
+```bash
+# Start a stack via axonflow-enterprise (see its setup-e2e-testing.sh)
+bash tests/e2e/smoke-block-context.sh
+```
+
+The smoke scenario runs the plugin's `pre-tool-check.sh` against a
+running platform, feeds a SQLi-bearing Bash tool invocation through it,
+and asserts Codex's deny semantics (exit 2 + stderr with `AxonFlow
+policy violation` prefix) carry Plugin Batch 1 richer-context markers
+(`decision:`, `risk:`). Exits 0 with a `SKIP:` message if no stack is
+reachable so the script is safe to run anywhere. In CI, run manually via
+`workflow_dispatch` or by applying the `run-e2e` label to a PR.
+
+Full install-and-use matrix lives in `axonflow-enterprise/tests/e2e/plugin-batch-1/codex-install/`.
+
 ## Links
 
 - [AxonFlow Documentation](https://docs.getaxonflow.com)
