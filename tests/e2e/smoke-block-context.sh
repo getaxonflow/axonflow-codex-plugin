@@ -4,10 +4,10 @@
 # and asserts the hook exits 2 with stderr containing the Codex deny
 # prefix and Plugin Batch 1 richer-context markers.
 #
-# Scope (per axonflow-enterprise/docs/test-visibility-policy.md):
-#   - smoke-only: install works, hook wiring works, one local deny UX
-#   - full matrix (explain / override / audit filter parity) lives in
-#     axonflow-enterprise/tests/e2e/plugin-batch-1/codex-install/
+# Scope: smoke-only — install wiring + one local deny UX. The full
+# install-and-use matrix (explain, override lifecycle, audit filter
+# parity, cache invalidation) lives alongside the platform in
+# axonflow-enterprise/tests/e2e/plugin-batch-1/codex-install/.
 #
 # Usage:
 #   AXONFLOW_ENDPOINT=http://localhost:8080 \
@@ -15,7 +15,8 @@
 #   AXONFLOW_CLIENT_SECRET=demo-secret \
 #     bash tests/e2e/smoke-block-context.sh
 #
-# CI trigger: workflow_dispatch or PR label `run-e2e`.
+# CI trigger: workflow_dispatch only (GitHub-hosted runners have no
+# local stack; PR gating needs a self-hosted runner).
 # -uo pipefail (no -e) so the errors=$((errors+1)) accumulator + FAIL
 # diagnostics always print.
 set -uo pipefail
@@ -23,10 +24,6 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 HOOK_SCRIPT="$REPO_ROOT/scripts/pre-tool-check.sh"
-
-if [ ! -x "$HOOK_SCRIPT" ]; then
-  chmod +x "$HOOK_SCRIPT" 2>/dev/null || true
-fi
 
 : "${AXONFLOW_ENDPOINT:=http://localhost:8080}"
 : "${AXONFLOW_CLIENT_ID:=demo-client}"
