@@ -1,186 +1,374 @@
 # AxonFlow Plugin for OpenAI Codex
 
-Policy enforcement, PII detection, and audit trails for OpenAI Codex. Enforces governance on Bash tool calls via hooks, provides advisory governance for other tools via skills, and records compliance-grade audit trails.
+**Runtime governance for OpenAI Codex: hard-enforce policy on every terminal command, guide Codex through skills for non-terminal tools, and keep a compliance-grade audit trail — without changing how you use Codex.**
 
-## How It Works
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
-**Terminal tool calls** (Bash, exec_command, shell) are governed automatically via hooks:
+> **→ Full integration walkthrough:** **[docs.getaxonflow.com/docs/integration/codex](https://docs.getaxonflow.com/docs/integration/codex/)** — architecture, the hybrid governance model, policy examples, troubleshooting, and the 10 MCP tools the platform exposes.
+
+---
+
+## Why you'd add this
+
+OpenAI Codex is a cloud-based agentic coding platform with sandboxed execution, MCP server support, and a composable skill system. It's excellent at agent-driven software delivery. It was never designed to be the layer where your security and compliance team lives.
+
+The gaps start surfacing the moment Codex runs anywhere near production:
+
+| Production requirement | Codex alone | With this plugin |
+|---|---|---|
+| Policy enforcement on terminal commands | PreToolUse hooks available, no logic | **Hard-enforced: dangerous commands blocked with exit code 2** |
+| Policy checks for non-terminal tools | Not available | **Advisory via skills — Codex instructed to call `check_policy` before Write/Edit/MCP** |
+| PII / secrets in tool outputs | Not addressed | **Auto-scan on terminal outputs; skills guide detection on others** |
+| SQL-injection detection on MCP queries | MCP server's problem | **30+ patterns available via `check_policy` MCP tool** |
+| Compliance-grade audit trail | Execution logs, not compliance-formatted | **Every governed terminal call recorded with policies, decision, duration** |
+| Decision explainability after a block | Generic hook failure | **`decision_id` in stderr; `explain_decision` MCP tool returns the full record** |
+| Self-service, time-bounded exceptions | Not available | **`create_override` with mandatory justification, fully audited** |
+
+The unique thing about Codex is that **not every tool can be hooked** — only terminal commands (`exec_command`) fire PreToolUse. This plugin is honest about that split, and uses a hybrid model that makes the boundary usable instead of fuzzy.
+
+---
+
+## The hybrid governance model
+
+Codex governance has two sides. AxonFlow spans both, but they are enforced differently — being explicit about this is what turns the plugin into something a platform team can reason about instead of a fuzzy "guardrails" story.
+
+| Tool class | Mechanism | Enforcement |
+|---|---|---|
+| **Bash / `exec_command` / shell** | PreToolUse hook → `check_policy` | **Hard-enforced.** Exit code 2 blocks execution before it starts. Cannot be bypassed. |
+| **Write, Edit, MCP tools** | Governance **skills** instruct Codex to call `check_policy` before acting | **Advisory.** The skill guides, Codex decides. Skills support implicit activation when the task matches. |
+| **Audit trail** | PostToolUse hook (terminal) + skills (others) | Automatic for terminal, skill-guided for everything else |
+
+Both paths converge on the **same explainability and override surface** — a blocked `exec_command` and a blocked-by-skill MCP write can both be investigated with `explain_decision` and unblocked with `create_override` when policy allows. That's what a senior platform engineer needs to evaluate this: the enforced path and the advisory path share one audit story.
+
+---
+
+## How it works
+
+### Terminal commands (enforced)
 
 ```
-Codex selects terminal tool (Bash / exec_command / shell)
+Codex selects exec_command / shell
     │
     ▼
 PreToolUse hook fires automatically
-    │ → check_policy("codex.exec_command", "rm -rf /")
+    │ → check_policy("codex.exec_command", "curl 169.254.169.254")
     │
-    ├─ BLOCKED (exit 2) → Codex receives denial, command never runs
+    ├─ BLOCKED (exit 2) → command never runs; decision_id in stderr
     │
-    └─ ALLOWED (exit 0) → Command executes normally
+    └─ ALLOWED (exit 0) → command executes
                       │
                       ▼
-                 PostToolUse hook fires automatically
+                 PostToolUse hook
                       │ → audit_tool_call(tool, input, output)
                       │ → check_output(result for PII/secrets)
 ```
 
-**Other tool calls** (Write, Edit, MCP tools) are governed via advisory skills that instruct the agent to call AxonFlow MCP tools before and after execution. Skills support implicit activation — Codex invokes them automatically when the task matches the skill description.
+### Other tools (advisory via skills)
 
-## Prerequisites
+```
+Codex selects Write / Edit / MCP tool
+    │
+    ▼
+Governance skill activates (implicit or explicit via @axonflow)
+    │ → Codex calls check_policy("codex.Write", file content)
+    │
+    ├─ Policy says blocked → Codex is instructed not to proceed
+    └─ Policy says allowed → Codex proceeds → audit skill records action
+```
 
-- [AxonFlow](https://github.com/getaxonflow/axonflow) v6.0.0+ running locally (`docker compose up -d`)
-- [OpenAI Codex CLI](https://developers.openai.com/codex/cli)
-- `jq` and `curl` installed
+---
+
+## Where this kicks in during real use
+
+### 1. The dangerous-command problem (enforced path)
+
+A developer tells Codex *"clean up old test data."* Codex selects `exec_command` and runs a destructive rm. That's the kind of mistake hooks exist for.
+
+**With the plugin:** PreToolUse fires before `exec_command` runs, the command is evaluated against 80+ policies (reverse shells, credential access, cloud metadata SSRF, path traversal, SQL-injection patterns), and blocked with exit 2 if it violates policy. The decision ID lands in stderr so Codex can call `explain_decision` and, if appropriate, `create_override`.
+
+### 2. The MCP query that returns too much (advisory path)
+
+Codex queries a database MCP server for "recent orders" and gets back a response with customer emails and phone numbers. Skills-side governance can't *force* a check, but it can make the check the path of least resistance.
+
+**With the plugin:** the `pii-scan` and `post-execute-audit` skills implicitly activate on MCP-returning tasks. Codex calls `check_output` against AxonFlow, which returns either a clean pass or PII-match details the model should honor. Every call is also auditable by running `search_audit_events` later.
+
+### 3. The converged unblock story
+
+A `exec_command` is blocked mid-session because a production pattern matched. The developer wants to proceed.
+
+**With the plugin:** Codex reads the decision ID from stderr, calls `explain_decision` to surface the policy family, and if the decision allows overrides, calls `create_override` with justification. The override is time-bounded and fully audited. Same workflow if the block came from an advisory skill path — converged UX, one audit story.
+
+---
 
 ## Install
 
+### Prerequisites
+
+- [OpenAI Codex CLI](https://developers.openai.com/codex/cli)
+- [AxonFlow](https://github.com/getaxonflow/axonflow) v6.0.0+ running (`docker compose up -d`)
+- `jq` and `curl` on `PATH`
+
+### 1. Clone and install dependencies
+
 ```bash
 git clone https://github.com/getaxonflow/axonflow-codex-plugin.git
+cd axonflow-codex-plugin
 ```
+
+### 2. Point Codex at the AxonFlow MCP server
+
+Codex reads MCP config from `~/.codex/config.toml` (TOML), **not** from `.mcp.json` in the plugin directory:
+
+```bash
+cat >> ~/.codex/config.toml << 'EOF'
+
+[mcp_servers.axonflow]
+url = "http://localhost:8080/api/v1/mcp-server"
+EOF
+```
+
+### 3. Enable hooks and install the hook file
+
+```bash
+cat >> ~/.codex/config.toml << 'EOF'
+
+[features]
+codex_hooks = true
+EOF
+cp hooks/hooks.json ~/.codex/hooks.json
+```
+
+The `hooks.json` file uses relative paths (`./scripts/...`). Update those paths in `~/.codex/hooks.json` to the absolute location of the plugin's `scripts/` directory, or symlink so Codex can resolve them from the plugin checkout.
+
+### 4. Register the plugin in Codex's local marketplace
+
+From the directory where you launch `codex`:
+
+```bash
+mkdir -p .agents/plugins
+cat > .agents/plugins/marketplace.json << 'EOF'
+{
+  "name": "axonflow-local",
+  "plugins": [{
+    "name": "axonflow",
+    "source": { "source": "local", "path": "./axonflow-codex-plugin" },
+    "policy": { "installation": "INSTALLED_BY_DEFAULT" },
+    "category": "Security"
+  }]
+}
+EOF
+
+codex   # then install via /plugins
+```
+
+### Start AxonFlow
+
+The plugin connects to AxonFlow, a self-hosted governance platform. **No LLM provider keys are required** — Codex handles every LLM call; AxonFlow only evaluates policies and records audit trails.
+
+```bash
+git clone https://github.com/getaxonflow/axonflow.git
+cd axonflow && docker compose up -d
+
+# verify
+curl -s http://localhost:8080/health | jq .
+```
+
+---
 
 ## Configure
 
 ```bash
 export AXONFLOW_ENDPOINT=http://localhost:8080
-export AXONFLOW_AUTH=""  # empty for community mode
-export AXONFLOW_TIMEOUT_SECONDS=12  # optional override for remote deployments
+export AXONFLOW_AUTH=""                # empty for community mode
+export AXONFLOW_TIMEOUT_SECONDS=12     # optional: remote/VPN deployments
 ```
 
-### Hooks Setup
-
-The `hooks/hooks.json` file uses relative paths (`./scripts/...`). To activate hooks, copy the file to your Codex config directory and update the paths to point to your clone location:
+For enterprise credentials:
 
 ```bash
-# Option 1: Copy and update paths to absolute
-cp hooks/hooks.json ~/.codex/hooks.json
-# Then edit ~/.codex/hooks.json to replace ./scripts/ with /full/path/to/axonflow-codex-plugin/scripts/
-
-# Option 2: Symlink so Codex runs from the plugin directory
-ln -sf "$(pwd)/hooks/hooks.json" ~/.codex/hooks.json
+export AXONFLOW_AUTH=$(echo -n "your-client-id:your-client-secret" | base64)
 ```
 
-Load via `@plugin-creator` or the Codex plugin system when marketplace opens.
+**Fail behavior:**
+- AxonFlow unreachable (network) → fail-open, tool execution continues
+- AxonFlow auth/config error → fail-closed (exit 2), tool call blocked until config is fixed
+- PostToolUse failures → never block (audit and PII scan are best-effort)
 
-In community mode, no auth is needed.
+---
 
-## Operational Tuning
+## What gets checked
 
-Use `AXONFLOW_TIMEOUT_SECONDS` to tune the hook HTTP timeout when AxonFlow is running remotely, behind a VPN, or over a higher-latency network path.
+AxonFlow ships with **80+ built-in system policies** that apply to Codex automatically. No configuration required — new policies added to the platform are immediately enforced.
 
-- PreToolUse defaults to 8 seconds when unset
-- PostToolUse defaults to 5 seconds when unset
-- Setting `AXONFLOW_TIMEOUT_SECONDS` applies the same timeout to all hook HTTP calls
+| Category | Coverage |
+|---|---|
+| **Dangerous commands** | Reverse shells, `rm -rf /`, `curl \| bash`, credential file access, path traversal |
+| **SQL injection** | 30+ patterns including UNION injection, stacked queries, auth bypass, encoding tricks |
+| **PII detection** | SSN, credit card, Aadhaar, PAN, email, phone, NRIC/FIN (Singapore), and more — with redaction |
+| **Secrets exposure** | API keys, connection strings, hardcoded credentials, code secrets |
+| **SSRF** | Cloud metadata endpoint (`169.254.169.254`) and internal-network blocking |
+| **Prompt injection** | Instruction override, jailbreak attempts, role hijacking |
+| **Codex-specific** | `.codex-plugin/*.json` and `.mcp.json` write protection (enabled via `AXONFLOW_INTEGRATIONS=codex`) |
 
-## Governance Model
+Custom policies are easy — `POST /api/v1/dynamic-policies` or the Customer Portal. See [Policy Enforcement](https://docs.getaxonflow.com/docs/mcp/policy-enforcement/).
 
-| Governance Type | Tool | Mechanism | Enforcement |
-|---|---|---|---|
-| **Enforcement** | Bash, exec_command, shell | PreToolUse hook | Yes — exit code 2 blocks execution |
-| **Advisory** | Write, Edit, MCP tools | Skills instruct agent to call check_policy | Agent decides — skills guide but cannot force |
-| **Audit** | All governed tools | PostToolUse hook (terminal) + skills (others) | Automatic for terminal tools, skill-guided for others |
+---
 
-## MCP Tools
+## The 10 MCP tools Codex can call
+
+Beyond the hook surface, the agent's MCP server exposes **10 tools** Codex can call directly. All served by the platform at `/api/v1/mcp-server`.
+
+### Governance (6)
 
 | Tool | Purpose |
 |------|---------|
 | `check_policy` | Evaluate specific inputs against policies |
 | `check_output` | Scan specific content for PII/secrets |
-| `audit_tool_call` | Record additional audit entries |
+| `audit_tool_call` | Record an additional audit entry |
 | `list_policies` | List active governance policies |
-| `get_policy_stats` | Get governance activity summary |
-| `search_audit_events` | Search individual audit records |
+| `get_policy_stats` | Summary of governance activity |
+| `search_audit_events` | Search individual audit records for debugging and compliance |
+
+### Decision explainability & session overrides (4)
+
+| Tool | Purpose |
+|------|---------|
+| `explain_decision` | Return the full [DecisionExplanation](https://docs.getaxonflow.com/docs/governance/explainability/) for a decision ID |
+| `create_override` | Create a time-bounded, audit-logged session override (mandatory justification) |
+| `delete_override` | Revoke an active session override |
+| `list_overrides` | List active overrides scoped to the caller's tenant |
+
+See [Session Overrides](https://docs.getaxonflow.com/docs/governance/overrides/).
+
+---
 
 ## Skills
 
-| Skill | When Used |
-|-------|-----------|
-| `pre-execute-check` | Before non-Bash tool calls that modify state |
-| `post-execute-audit` | After non-Bash tool calls complete |
-| `pii-scan` | After tool calls that return data |
-| `governance-status` | When checking overall governance posture |
-| `audit-search` | When searching compliance evidence |
-| `policy-list` | When listing active policies |
+The skills are how Codex gets governance guidance for non-terminal tools — the advisory half of the hybrid model. Implicit activation means Codex invokes them automatically when the task matches the skill description; explicit invocation is `@axonflow`.
 
-Skills are activated implicitly when the task matches the description, or explicitly via `@axonflow`.
+| Skill | When used | Activation |
+|-------|-----------|------------|
+| `pre-execute-check` | Before non-Bash tool calls that modify state | Implicit or explicit |
+| `post-execute-audit` | After non-Bash tool calls complete | Implicit or explicit |
+| `pii-scan` | After tool calls that return data | Implicit or explicit |
+| `governance-status` | Checking governance posture | Explicit |
+| `audit-search` | Searching compliance evidence | Explicit |
+| `policy-list` | Listing active policies | Explicit |
 
-## What Gets Checked
+---
 
-AxonFlow ships with 80+ built-in system policies:
+## Latency
 
-- **Dangerous commands** — destructive filesystem operations, remote code execution, credential access, cloud metadata SSRF, path traversal
-- **SQL injection** — 30+ patterns including UNION injection, stacked queries, auth bypass
-- **PII detection** — SSN, credit card, email, phone, Aadhaar, PAN, NRIC/FIN
-- **Code security** — API keys, connection strings, hardcoded secrets
-- **Prompt injection** — instruction override and context manipulation
+| Operation | Typical overhead |
+|-----------|-----------------|
+| Policy pre-check (hook) | 2–5 ms |
+| PII detection | 1–3 ms |
+| Audit write (async) | 0 ms (non-blocking) |
+| **Total per-terminal-call overhead** | **3–10 ms** |
 
-## Plugin Structure
+Imperceptible in interactive Codex sessions.
+
+---
+
+## Sister integrations
+
+Same governance platform, same 80+ policies, same 10 MCP tools — different agent hosts:
+
+| Integration | Repo | Docs |
+|---|---|---|
+| OpenAI Codex | *this repo* | [codex](https://docs.getaxonflow.com/docs/integration/codex/) |
+| Claude Code | [axonflow-claude-plugin](https://github.com/getaxonflow/axonflow-claude-plugin) | [claude-code](https://docs.getaxonflow.com/docs/integration/claude-code/) |
+| Cursor IDE | [axonflow-cursor-plugin](https://github.com/getaxonflow/axonflow-cursor-plugin) | [cursor](https://docs.getaxonflow.com/docs/integration/cursor/) |
+| OpenClaw | [axonflow-openclaw-plugin](https://github.com/getaxonflow/axonflow-openclaw-plugin) | [openclaw](https://docs.getaxonflow.com/docs/integration/openclaw/) |
+
+---
+
+## Plugin structure
 
 ```
 axonflow-codex-plugin/
 ├── .codex-plugin/
-│   └── plugin.json          # Plugin metadata
-├── .mcp.json                # MCP server connection (6 governance tools)
+│   ├── plugin.json          # Plugin metadata
+│   └── marketplace.json     # Marketplace listing
+├── .mcp.json                # MCP server connection (platform-side)
 ├── hooks/
-│   └── hooks.json           # PreToolUse + PostToolUse for Bash
+│   └── hooks.json           # PreToolUse + PostToolUse for exec_command
 ├── skills/
-│   ├── pre-execute-check/   # Check policy before tool calls
-│   ├── post-execute-audit/  # Record audit after tool calls
-│   ├── pii-scan/            # Scan output for PII
-│   ├── governance-status/   # Governance activity summary
-│   ├── audit-search/        # Search audit trail
-│   └── policy-list/         # List active policies
+│   ├── pre-execute-check/
+│   ├── post-execute-audit/
+│   ├── pii-scan/
+│   ├── governance-status/
+│   ├── audit-search/
+│   └── policy-list/
 ├── scripts/
 │   ├── pre-tool-check.sh    # Policy evaluation (PreToolUse)
 │   ├── post-tool-audit.sh   # Audit + PII scan (PostToolUse)
-│   ├── telemetry-ping.sh   # Anonymous telemetry (fires once per install)
-│   └── mcp-auth-headers.sh  # MCP auth header generation
-├── tests/
-│   └── test-hooks.sh        # Regression tests (mock + live)
-└── .github/workflows/test.yml
+│   ├── mcp-auth-headers.sh  # Basic-auth header generation for MCP
+│   ├── telemetry-ping.sh    # Anonymous telemetry (fires once per install)
+│   └── uninstall.sh         # Clean removal of hooks, config, and marketplace entry
+└── tests/
+    ├── test-hooks.sh        # Regression tests (mock + live)
+    ├── E2E_TESTING_PLAYBOOK.md
+    └── e2e/                 # Smoke E2E against live AxonFlow
 ```
+
+---
 
 ## Testing
 
-Unit tests (hook regression, mock server — no live stack needed):
-
 ```bash
+# Hook regression tests (no live stack required)
 ./tests/test-hooks.sh
-```
 
-Smoke E2E (requires a live AxonFlow stack at `localhost:8080`):
-
-```bash
-# Start a stack via axonflow-enterprise (see its setup-e2e-testing.sh)
+# Smoke E2E against a live AxonFlow at localhost:8080
 bash tests/e2e/smoke-block-context.sh
 ```
 
-The smoke scenario runs the plugin's `pre-tool-check.sh` against a
-running platform, feeds a SQLi-bearing Bash tool invocation through it,
-and asserts Codex's deny semantics (exit 2 + stderr with `AxonFlow
-policy violation` prefix) carry Plugin Batch 1 richer-context markers
-(`decision:`, `risk:`). Exits 0 with a `SKIP:` message if no stack is
-reachable so the script is safe to run anywhere. In CI, run manually via
-`workflow_dispatch` with a reachable endpoint.
+The smoke scenario runs the plugin's `pre-tool-check.sh` against a running platform, feeds a SQLi-bearing Bash tool invocation through it, and asserts Codex's deny semantics (exit 2 + stderr prefix `AxonFlow policy violation`) carry the richer-context markers (`decision:`, `risk:`). Exits 0 with `SKIP:` if no stack is reachable.
 
-Full install-and-use matrix lives in `axonflow-enterprise/tests/e2e/plugin-batch-1/codex-install/`.
+For the broader validation story — explain-decision, override lifecycle, audit-filter parity, cache invalidation — see the [Codex integration guide](https://docs.getaxonflow.com/docs/integration/codex/).
 
-## Links
+---
 
-- [AxonFlow Documentation](https://docs.getaxonflow.com)
-- [Codex Integration Guide](https://docs.getaxonflow.com/docs/integration/codex/)
-- [Codex Plugins](https://developers.openai.com/codex/plugins)
-- [Claude Code Plugin](https://github.com/getaxonflow/axonflow-claude-plugin) — sister plugin
-- [Cursor Plugin](https://github.com/getaxonflow/axonflow-cursor-plugin) — sister plugin
-- [OpenClaw Plugin](https://github.com/getaxonflow/axonflow-openclaw-plugin)
+## Troubleshooting
+
+**MCP server connection failed?** Codex reads MCP config from `~/.codex/config.toml` (TOML format), not from `.mcp.json` in the plugin directory. Add `[mcp_servers.axonflow]` with `url = "http://localhost:8080/api/v1/mcp-server"`.
+
+**Hooks not firing on bash?** Hooks must be at `~/.codex/hooks.json` (not inside the plugin directory). Enable hooks with `[features] codex_hooks = true` in `~/.codex/config.toml`. The hook matcher should include `exec_command` — Codex uses this name for terminal commands, not `Bash`.
+
+**Skills not activating?** Skills activate implicitly when the task matches the description. For explicit invocation, use `@axonflow`. Ensure the plugin is installed via `/plugins` in Codex and the MCP server is reachable.
+
+**Plugin not visible in `/plugins`?** `marketplace.json` must live at `$CWD/.agents/plugins/marketplace.json` relative to where you launch `codex`. The `source.path` must be relative (start with `./`) and point inside the same root.
+
+**PII in file writes not detected?** Codex hooks only support Bash (`exec_command`). Write/Edit operations cannot be hooked. PII detection for file writes depends on advisory skills (`pre-execute-check`, `pii-scan`) — the skill instructs the agent to call `check_output` before writing, but this is not enforced. This is the advisory half of the hybrid model at work; see [Governance Model](#the-hybrid-governance-model).
+
+More troubleshooting in the [integration guide](https://docs.getaxonflow.com/docs/integration/codex/#troubleshooting).
+
+---
 
 ## Telemetry
 
-This plugin sends an anonymous telemetry ping on first hook invocation to help us understand usage patterns. The ping includes: plugin version, platform info (OS, architecture, bash version), and AxonFlow platform version. No PII, no tool arguments, no policy data.
+Anonymous one-time ping on first hook invocation: plugin version, OS, architecture, bash version, AxonFlow platform version. **Never** tool arguments, message contents, or policy data.
 
 Opt out:
 - `DO_NOT_TRACK=1` (standard)
 - `AXONFLOW_TELEMETRY=off`
 
-The telemetry ping fires once per install (guarded by a stamp file at `$HOME/.cache/axonflow/codex-plugin-telemetry-sent`). Delete the stamp file to re-send on next hook invocation. Full telemetry documentation: [docs.getaxonflow.com/docs/telemetry](https://docs.getaxonflow.com/docs/telemetry/).
+Guarded by a stamp file at `$HOME/.cache/axonflow/codex-plugin-telemetry-sent` (delete to re-send). Details: [docs.getaxonflow.com/docs/telemetry](https://docs.getaxonflow.com/docs/telemetry/).
+
+---
+
+## Links
+
+- **[Codex Integration Guide](https://docs.getaxonflow.com/docs/integration/codex/)** — the full walkthrough (recommended starting point)
+- [AxonFlow Documentation](https://docs.getaxonflow.com)
+- [Codex Plugins docs (OpenAI)](https://developers.openai.com/codex/plugins)
+- [Policy Enforcement](https://docs.getaxonflow.com/docs/mcp/policy-enforcement/)
+- [Decision Explainability](https://docs.getaxonflow.com/docs/governance/explainability/)
+- [Session Overrides](https://docs.getaxonflow.com/docs/governance/overrides/)
+- [Self-Hosted Deployment](https://docs.getaxonflow.com/docs/deployment/self-hosted/)
+- [Security Best Practices](https://docs.getaxonflow.com/docs/security/best-practices/)
+- Sister plugins: [Claude Code](https://github.com/getaxonflow/axonflow-claude-plugin) · [Cursor](https://github.com/getaxonflow/axonflow-cursor-plugin) · [OpenClaw](https://github.com/getaxonflow/axonflow-openclaw-plugin)
 
 ## License
 
