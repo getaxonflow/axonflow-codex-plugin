@@ -303,10 +303,12 @@ axonflow-codex-plugin/
 ├── scripts/
 │   ├── pre-tool-check.sh    # Policy evaluation (PreToolUse)
 │   ├── post-tool-audit.sh   # Audit + PII scan (PostToolUse)
+│   ├── mcp-auth-headers.sh  # Basic-auth header generation for MCP
 │   ├── telemetry-ping.sh    # Anonymous telemetry (fires once per install)
-│   └── mcp-auth-headers.sh  # MCP auth header generation
+│   └── uninstall.sh         # Clean removal of hooks, config, and marketplace entry
 └── tests/
     ├── test-hooks.sh        # Regression tests (mock + live)
+    ├── E2E_TESTING_PLAYBOOK.md
     └── e2e/                 # Smoke E2E against live AxonFlow
 ```
 
