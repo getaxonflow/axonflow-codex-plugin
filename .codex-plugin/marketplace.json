@@ -7,14 +7,14 @@
   },
   "metadata": {
     "description": "Runtime governance for OpenAI Codex. Policy enforcement on terminal commands, advisory governance via skills, PII detection, audit trails, and compliance-grade decision records.",
-    "version": "0.4.1"
+    "version": "0.4.2"
   },
   "plugins": [
     {
       "name": "axonflow",
       "source": "./",
       "description": "Policy enforcement, PII detection, and audit trails for OpenAI Codex. Hybrid governance — enforces policies on terminal commands (exec_command) via hooks, provides advisory governance for other tools via implicit-activation skills, and records compliance-grade audit trails. Self-hosted via Docker — all data stays on your infrastructure.",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "author": {
         "name": "AxonFlow",
         "email": "hello@getaxonflow.com",
