@@ -1,21 +1,39 @@
 #!/usr/bin/env bash
 # PostToolUse hook — audit logging and output scanning.
-# Adapted for OpenAI Codex from the Claude Code plugin.
+# Matches the OpenClaw plugin's after_tool_call + message_sending hooks.
 #
 # 1. Records tool execution in AxonFlow audit trail (fire-and-forget, background)
-# 2. Scans tool output for PII/secrets (synchronous — returns context to Codex)
+# 2. Scans tool output for PII/secrets (synchronous — needs to return context to Claude)
 #
 # This script is best-effort: failures never block tool execution.
-# Codex PostToolUse always exits 0 — never blocks.
+# No set -e — individual command failures are handled gracefully.
 
 # Fail-open: if jq/curl not available, exit silently
 if ! command -v jq &>/dev/null || ! command -v curl &>/dev/null; then
   exit 0
 fi
 
-ENDPOINT="${AXONFLOW_ENDPOINT:-http://localhost:8080}"
-AUTH="${AXONFLOW_AUTH:-}"
+# Endpoint resolution per ADR-048: default to AxonFlow Community SaaS only when
+# the user has not set explicit config. Mirrors pre-tool-check.sh exactly so the
+# two hooks always agree on which AxonFlow they're talking to.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -z "${AXONFLOW_ENDPOINT:-}" ] && [ -z "${AXONFLOW_AUTH:-}" ]; then
+  ENDPOINT="https://try.getaxonflow.com"
+  AXONFLOW_MODE="community-saas"
+else
+  ENDPOINT="${AXONFLOW_ENDPOINT:-http://localhost:8080}"
+  AXONFLOW_MODE="self-hosted"
+fi
+export AXONFLOW_MODE
 REQUEST_TIMEOUT_SECONDS="${AXONFLOW_TIMEOUT_SECONDS:-5}"
+
+# Bootstrap the Community-SaaS credential if needed. No-op in self-hosted mode.
+# Pre-tool-check ran first and likely already wrote the registration file; this
+# is just loading it. Mode-clarity log line is intentionally NOT repeated here —
+# pre-tool-check fires it once per hook invocation.
+# shellcheck disable=SC1091
+. "${SCRIPT_DIR}/community-saas-bootstrap.sh"
+AUTH="${AXONFLOW_AUTH:-}"
 
 AUTH_HEADER=()
 if [ -n "$AUTH" ]; then
@@ -34,7 +52,7 @@ if [ -z "$TOOL_NAME" ]; then
   exit 0
 fi
 
-CONNECTOR_TYPE="codex.${TOOL_NAME}"
+CONNECTOR_TYPE="claude_code.${TOOL_NAME}"
 
 # Determine success from tool response
 SUCCESS=$(echo "$TOOL_RESPONSE" | jq 'if .exitCode != null then (.exitCode == 0) elif .success != null then .success else true end' 2>/dev/null || echo "true")
@@ -63,7 +81,7 @@ TRUNCATED_OUTPUT=$(echo "$TOOL_RESPONSE" | jq -c '.' 2>/dev/null | cut -c1-500 |
           name: "audit_tool_call",
           arguments: {
             tool_name: $tn,
-            tool_type: "codex",
+            tool_type: "claude_code",
             input: ($ti | fromjson? // {}),
             output: {summary: $out},
             success: $success,
@@ -73,15 +91,15 @@ TRUNCATED_OUTPUT=$(echo "$TOOL_RESPONSE" | jq -c '.' 2>/dev/null | cut -c1-500 |
       }')" > /dev/null 2>&1
 ) &
 
-# 2. Scan tool output for PII/secrets (synchronous — returns context if PII found)
+# 2. Scan tool output for PII/secrets (synchronous — returns context to Claude if PII found)
 OUTPUT_TEXT=""
 case "$TOOL_NAME" in
-  Bash|exec_command|shell)
-    OUTPUT_TEXT=$(echo "$TOOL_RESPONSE" | jq -r '.stdout // .output // empty' 2>/dev/null || echo "")
+  Bash)
+    OUTPUT_TEXT=$(echo "$TOOL_RESPONSE" | jq -r '.stdout // empty' 2>/dev/null || echo "")
     # If stdout is empty but command contains a redirect (echo ... > file),
     # scan the command itself — the PII is in the input, not the output.
     if [ -z "$OUTPUT_TEXT" ] || [ "$OUTPUT_TEXT" = "null" ]; then
-      COMMAND=$(echo "$TOOL_INPUT" | jq -r '.cmd // .command // empty' 2>/dev/null || echo "")
+      COMMAND=$(echo "$TOOL_INPUT" | jq -r '.command // empty' 2>/dev/null || echo "")
       if echo "$COMMAND" | grep -qE '>>?\s*\S' ; then
         OUTPUT_TEXT="$COMMAND"
       fi
@@ -122,15 +140,18 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
         }
       }')" 2>/dev/null || echo "")
 
-  # If PII was found, add context
+  # If PII was found, add context for Claude
   if [ -n "$SCAN_RESPONSE" ]; then
     SCAN_RESULT=$(echo "$SCAN_RESPONSE" | jq -r '.result.content[0].text // empty' 2>/dev/null || echo "")
     if [ -n "$SCAN_RESULT" ]; then
       REDACTED=$(echo "$SCAN_RESULT" | jq -r '.redacted_message // empty' 2>/dev/null || echo "")
       POLICIES_FOUND=$(echo "$SCAN_RESULT" | jq -r '.policies_evaluated // 0' 2>/dev/null || echo "0")
-      ALLOWED=$(echo "$SCAN_RESULT" | jq -r 'if .allowed == false then "false" else "true" end' 2>/dev/null || echo "true")
+      ALLOWED=$(echo "$SCAN_RESULT" | jq -r '.allowed // true' 2>/dev/null || echo "true")
 
       if [ -n "$REDACTED" ] && [ "$REDACTED" != "null" ]; then
+        # PII detected in tool output. PostToolUse hooks cannot transform
+        # the original output — we can only instruct Claude not to expose
+        # the raw PII in its response to the user.
         jq -n \
           --arg redacted "$REDACTED" \
           --arg policies "$POLICIES_FOUND" \
@@ -142,6 +163,7 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
           }'
         exit 0
       elif [ "$ALLOWED" = "false" ]; then
+        # Output blocked by policy (not just PII redaction)
         BLOCK_REASON=$(echo "$SCAN_RESULT" | jq -r '.block_reason // "Policy violation in tool output"' 2>/dev/null || echo "")
         jq -n \
           --arg reason "$BLOCK_REASON" \

@@ -45,3 +45,12 @@ jobs:
         run: |
           chmod +x tests/install-smoke/*.sh tests/install-smoke/*.py scripts/*.sh
           bash tests/install-smoke/run.sh
+
+      - name: Mode-clarity gate (ADR-048)
+        # Required gate: asserts the canary log line on stderr matches the
+        # resolved endpoint exactly across all 5 input combinations of
+        # AXONFLOW_ENDPOINT × AXONFLOW_AUTH. Defends against
+        # "user thinks they're on localhost, data goes to SaaS" silently.
+        run: |
+          chmod +x tests/mode-clarity.sh
+          bash tests/mode-clarity.sh
