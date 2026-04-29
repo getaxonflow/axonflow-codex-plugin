@@ -21,6 +21,7 @@
 
 - Telemetry ping now fires once per install on Codex. The previous behavior silently exited at the `DO_NOT_TRACK=1` check (injected by Codex), so the install ping never reached the stamp-file guard.
 - The deprecation warning no longer leaks to stderr on every `PreToolUse` hook invocation, eliminating the noise that was getting concatenated with `AxonFlow policy violation` messages on blocked commands.
+- Telemetry heartbeat now correctly classifies Community-SaaS sessions. The previous endpoint resolution fell into the localhost branch after the Community-SaaS bootstrap exported `AXONFLOW_AUTH` but intentionally left `AXONFLOW_ENDPOINT` unset; `/health` probes targeted localhost, `platform_version` shipped as `null`, and `deployment_mode` was tagged `production`. Resolution now keys off `AXONFLOW_MODE` first, so Community-SaaS users see the canonical endpoint and a dedicated `deployment_mode=community-saas` value.
 
 ### CI / development
 
