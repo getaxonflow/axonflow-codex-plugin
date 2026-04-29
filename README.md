@@ -6,6 +6,8 @@
 
 > **→ Full integration walkthrough:** **[docs.getaxonflow.com/docs/integration/codex](https://docs.getaxonflow.com/docs/integration/codex/)** — architecture, the hybrid governance model, policy examples, troubleshooting, and the 10 MCP tools the platform exposes.
 
+> **Upgrade strongly recommended.** AxonFlow ships substantial monthly security and quality hardening; staying on the latest major is the security-supported release line. [Latest release](https://github.com/getaxonflow/axonflow-codex-plugin/releases/latest) · [Security advisories](https://github.com/getaxonflow/axonflow-codex-plugin/security/advisories)
+
 ---
 
 ## Why you'd add this
