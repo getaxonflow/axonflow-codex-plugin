@@ -384,7 +384,7 @@ More troubleshooting in the [integration guide](https://docs.getaxonflow.com/doc
 
 ## Telemetry
 
-Anonymous one-time ping on first hook invocation: plugin version, OS, architecture, bash version, AxonFlow platform version. **Never** tool arguments, message contents, or policy data.
+Anonymous heartbeat at most once every 7 days per machine: plugin version, OS, architecture, bash version, AxonFlow platform version, deployment mode (community-saas / self-hosted production / self-hosted development). **Never** tool arguments, message contents, or policy data. The stamp file mtime advances only after the HTTP POST returns 2xx, so a transient network failure does not silence telemetry until the next window.
 
 Opt out: set `AXONFLOW_TELEMETRY=off` in the environment Codex runs in.
 
