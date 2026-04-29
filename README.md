@@ -386,9 +386,9 @@ More troubleshooting in the [integration guide](https://docs.getaxonflow.com/doc
 
 Anonymous one-time ping on first hook invocation: plugin version, OS, architecture, bash version, AxonFlow platform version. **Never** tool arguments, message contents, or policy data.
 
-Opt out:
-- `AXONFLOW_TELEMETRY=off` (canonical)
-- `DO_NOT_TRACK=1` — still honored for backward compatibility, but **deprecated** and scheduled for removal after 2026-05-05 in the next major release. The plugin emits a one-time warning when `DO_NOT_TRACK=1` is the active control and `AXONFLOW_TELEMETRY=off` is not also set.
+Opt out: set `AXONFLOW_TELEMETRY=off` in the environment Codex runs in.
+
+`DO_NOT_TRACK=1` is **not** honored as an opt-out here. The Codex CLI injects `DO_NOT_TRACK=1` into every hook subprocess regardless of user intent, so it cannot represent a real user choice in this context.
 
 Guarded by a stamp file at `$HOME/.cache/axonflow/codex-plugin-telemetry-sent` (delete to re-send). Details: [docs.getaxonflow.com/docs/telemetry](https://docs.getaxonflow.com/docs/telemetry/).
 

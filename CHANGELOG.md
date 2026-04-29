@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `DO_NOT_TRACK=1` is no longer treated as a telemetry opt-out in this plugin because the host CLI injects it into hook subprocesses regardless of user intent. Use `AXONFLOW_TELEMETRY=off` to opt out.
+
+### Fixed
+
+- Telemetry ping now actually fires once per install on Codex. The previous behavior silently exited at the `DO_NOT_TRACK=1` check (injected by Codex), so the install ping never reached the stamp-file guard.
+- The deprecation warning no longer leaks to stderr on every `PreToolUse` hook invocation. Removing the warning emit also removes the visible noise that was getting concatenated with `AxonFlow policy violation` messages on blocked commands.
+
 
 ## [0.4.2] - 2026-04-22
 
