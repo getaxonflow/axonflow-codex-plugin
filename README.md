@@ -6,7 +6,7 @@
 
 > **→ Full integration walkthrough:** **[docs.getaxonflow.com/docs/integration/codex](https://docs.getaxonflow.com/docs/integration/codex/)** — architecture, the hybrid governance model, policy examples, troubleshooting, and the 10 MCP tools the platform exposes.
 
-> **Upgrade strongly recommended.** Over the past month we've shipped substantial production, quality, and security hardening across the AxonFlow plugin and platform — see the [v0.5.0 release notes](./CHANGELOG.md), the per-plugin advisory [`GHSA-8wrg-fpx5-87f7`](https://github.com/getaxonflow/axonflow-codex-plugin/security/advisories/GHSA-8wrg-fpx5-87f7), and the consolidated platform advisory [`GHSA-9h64-2846-7x7f`](https://github.com/getaxonflow/axonflow/security/advisories/GHSA-9h64-2846-7x7f). Upgrade to the latest version for a more secure, reliable, and bug-free experience.
+> **Upgrade strongly recommended.** AxonFlow ships substantial monthly security and quality hardening; staying on the latest major is the security-supported release line. [Latest release](https://github.com/getaxonflow/axonflow-codex-plugin/releases/latest) · [Security advisories](https://github.com/getaxonflow/axonflow-codex-plugin/security/advisories)
 
 ---
 
