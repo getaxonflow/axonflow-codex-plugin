@@ -204,14 +204,17 @@ cd /Users/saurabhjain/Development/axonflow-codex-plugin
 1. With stamp file present, run another governed tool
 2. No new HTTP request to checkpoint (verify via network monitor or AxonFlow logs)
 
-### 5.3 Opt-out verification (DO_NOT_TRACK)
+### 5.3 Opt-out verification (AXONFLOW_TELEMETRY=off)
 1. Delete stamp file
-2. Set `export DO_NOT_TRACK=1`
+2. Set `export AXONFLOW_TELEMETRY=off`
 3. Run a governed tool
 4. Verify NO stamp file created
 
-### 5.4 Opt-out verification (AXONFLOW_TELEMETRY)
-1. Same as 5.3 but with `export AXONFLOW_TELEMETRY=off`
+### 5.4 DO_NOT_TRACK alone does NOT suppress (regression check)
+1. Delete stamp file
+2. Set `export DO_NOT_TRACK=1` (without `AXONFLOW_TELEMETRY=off`)
+3. Run a governed tool
+4. Verify the stamp file IS created — DNT is no longer honored as an AxonFlow opt-out, since host CLIs inject it regardless of user intent
 
 ---
 
