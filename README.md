@@ -388,7 +388,7 @@ Anonymous one-time ping on first hook invocation: plugin version, OS, architectu
 
 Opt out: set `AXONFLOW_TELEMETRY=off` in the environment Codex runs in.
 
-`DO_NOT_TRACK=1` is **not** honored as an opt-out here. The Codex CLI injects `DO_NOT_TRACK=1` into every hook subprocess regardless of user intent, so it cannot represent a real user choice in this context.
+`DO_NOT_TRACK` is **not** honored as an opt-out for AxonFlow telemetry. It is commonly inherited from host tools and developer environments — and in Codex specifically, the CLI injects `DO_NOT_TRACK=1` into every hook subprocess regardless of user intent. That makes it an unreliable expression of user intent, so AxonFlow telemetry is controlled exclusively by `AXONFLOW_TELEMETRY=off`.
 
 Guarded by a stamp file at `$HOME/.cache/axonflow/codex-plugin-telemetry-sent` (delete to re-send). Details: [docs.getaxonflow.com/docs/telemetry](https://docs.getaxonflow.com/docs/telemetry/).
 

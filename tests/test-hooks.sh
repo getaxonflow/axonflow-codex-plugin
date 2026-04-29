@@ -239,7 +239,7 @@ export AXONFLOW_AUTH="$AUTH"
 # from pre-tool-check.sh, so without this, every hook test would attempt a
 # real ping to checkpoint.getaxonflow.com. The dedicated telemetry test
 # section below explicitly unsets this to test the telemetry path.
-export DO_NOT_TRACK=1
+export AXONFLOW_TELEMETRY=off
 
 echo ""
 
@@ -437,7 +437,7 @@ assert_eq "Exit code is 0 (never blocks)" "0" "$EXIT_CODE"
 
 TELEMETRY_SCRIPT="$PLUGIN_DIR/scripts/telemetry-ping.sh"
 ORIGINAL_HOME="$HOME"
-ORIGINAL_DNT="${DO_NOT_TRACK:-}"
+ORIGINAL_AXONFLOW_TELEMETRY="${AXONFLOW_TELEMETRY:-}"
 
 # CRITICAL: Also forces AXONFLOW_CHECKPOINT_URL to the local mock port.
 # Without this, any test that runs TELEMETRY_SCRIPT without its own
@@ -446,7 +446,6 @@ ORIGINAL_DNT="${DO_NOT_TRACK:-}"
 setup_telemetry_test() {
     TEST_HOME=$(mktemp -d)
     export HOME="$TEST_HOME"
-    unset DO_NOT_TRACK 2>/dev/null || true
     unset AXONFLOW_TELEMETRY 2>/dev/null || true
     export AXONFLOW_CHECKPOINT_URL="http://127.0.0.1:$MOCK_PORT/v1/ping"
     echo "" > "$TELEMETRY_CAPTURE_FILE" 2>/dev/null || true
@@ -455,8 +454,8 @@ setup_telemetry_test() {
 teardown_telemetry_test() {
     export HOME="$ORIGINAL_HOME"
     unset AXONFLOW_CHECKPOINT_URL
-    if [ -n "${ORIGINAL_DNT:-}" ]; then
-        export DO_NOT_TRACK="$ORIGINAL_DNT"
+    if [ -n "${ORIGINAL_AXONFLOW_TELEMETRY:-}" ]; then
+        export AXONFLOW_TELEMETRY="$ORIGINAL_AXONFLOW_TELEMETRY"
     fi
     rm -rf "$TEST_HOME" 2>/dev/null || true
 }
@@ -485,11 +484,11 @@ assert_eq "No telemetry ping sent (stamp exists)" "" "$CAPTURED_TRIMMED"
 teardown_telemetry_test
 
 echo ""
-echo "--- Telemetry: DO_NOT_TRACK=1 suppresses ---"
+echo "--- Telemetry: DO_NOT_TRACK=1 alone does NOT suppress (host CLI injects it) ---"
 setup_telemetry_test
 DO_NOT_TRACK=1 "$TELEMETRY_SCRIPT" 2>/dev/null
 sleep 1
-assert_file_not_exists "No stamp file when opted out" "$TEST_HOME/.cache/axonflow/codex-plugin-telemetry-sent"
+assert_file_exists "Stamp file created — DNT alone is not honored" "$TEST_HOME/.cache/axonflow/codex-plugin-telemetry-sent"
 teardown_telemetry_test
 
 echo ""
@@ -498,6 +497,14 @@ setup_telemetry_test
 AXONFLOW_TELEMETRY=off "$TELEMETRY_SCRIPT" 2>/dev/null
 sleep 1
 assert_file_not_exists "No stamp file when opted out" "$TEST_HOME/.cache/axonflow/codex-plugin-telemetry-sent"
+teardown_telemetry_test
+
+echo ""
+echo "--- Telemetry: AXONFLOW_TELEMETRY=off suppresses even with DO_NOT_TRACK=1 also set ---"
+setup_telemetry_test
+DO_NOT_TRACK=1 AXONFLOW_TELEMETRY=off "$TELEMETRY_SCRIPT" 2>/dev/null
+sleep 1
+assert_file_not_exists "AXONFLOW_TELEMETRY=off is the canonical opt-out and wins" "$TEST_HOME/.cache/axonflow/codex-plugin-telemetry-sent"
 teardown_telemetry_test
 
 echo ""

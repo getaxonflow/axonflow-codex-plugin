@@ -2,14 +2,18 @@
 
 ## [Unreleased]
 
-### Changed
+### Removed
 
-- `DO_NOT_TRACK=1` is no longer treated as a telemetry opt-out in this plugin because the host CLI injects it into hook subprocesses regardless of user intent. Use `AXONFLOW_TELEMETRY=off` to opt out.
+- **BREAKING:** `DO_NOT_TRACK=1` is no longer honored as an AxonFlow telemetry opt-out in this plugin. Use `AXONFLOW_TELEMETRY=off` instead. The Codex CLI injects `DO_NOT_TRACK=1` into every hook subprocess regardless of user intent, so it cannot represent a real user choice in this context.
 
 ### Fixed
 
-- Telemetry ping now actually fires once per install on Codex. The previous behavior silently exited at the `DO_NOT_TRACK=1` check (injected by Codex), so the install ping never reached the stamp-file guard.
-- The deprecation warning no longer leaks to stderr on every `PreToolUse` hook invocation. Removing the warning emit also removes the visible noise that was getting concatenated with `AxonFlow policy violation` messages on blocked commands.
+- Telemetry ping now fires once per install on Codex. The previous behavior silently exited at the `DO_NOT_TRACK=1` check (injected by Codex), so the install ping never reached the stamp-file guard.
+- The deprecation warning no longer leaks to stderr on every `PreToolUse` hook invocation, eliminating the noise that was getting concatenated with `AxonFlow policy violation` messages on blocked commands.
+
+### CI / development
+
+- Test harness (`tests/test-hooks.sh`) and CI workflows (`test.yml`, `install-smoke.yml`, `smoke-e2e.yml`) now use `AXONFLOW_TELEMETRY=off` to suppress telemetry during automated runs.
 
 
 ## [0.4.2] - 2026-04-22
