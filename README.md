@@ -138,17 +138,33 @@ Org-wide policies and session overrides are **Enterprise-only** — those are th
 
 ---
 
-## Where your data goes
+## Privacy notice
 
-The plugin governs tool calls and outbound messages by sending each one to an AxonFlow endpoint for policy evaluation and audit. The endpoint is selected by which of `AXONFLOW_ENDPOINT` / `AXONFLOW_AUTH` you have set when the hooks fire.
+**Read before installing.** AxonFlow [Community SaaS](https://docs.getaxonflow.com/docs/deployment/community-saas/) at `try.getaxonflow.com` is the zero-config endpoint the plugin uses if neither `AXONFLOW_ENDPOINT` nor `AXONFLOW_AUTH` is configured. In that mode, governed tool inputs (tool name + arguments) and outbound message bodies are sent off-host to AxonFlow's shared evaluation endpoint for policy evaluation and audit. **Community SaaS is for early exploration only** — not for production workloads, regulated environments, real user data, personal data, or any other sensitive information. It is offered "as is" on a best-effort basis with no SLA, no warranties, and no commitment to retention, deletion, or incident-response timelines.
 
-### Default: AxonFlow Community SaaS
+For any serious use, choose one of the following instead:
 
-If you do not set `AXONFLOW_ENDPOINT` or `AXONFLOW_AUTH`, the plugin connects to **AxonFlow Community SaaS** at `https://try.getaxonflow.com` and registers a tenant on first run. Credentials persist at `~/.config/axonflow/try-registration.json` (mode `0600`). Every hook invocation logs a one-line canary on stderr so you always know which mode is active:
+1. **[Self-host AxonFlow Community Edition](https://docs.getaxonflow.com/docs/deployment/self-hosted/)** — runs entirely on your infrastructure and keeps data within your boundary. Recommended for any real workload. The in-README quick start is in [Step 1](#step-1-install-the-axonflow-platform) below.
+2. **Community Edition with an [Evaluation License](https://docs.getaxonflow.com/docs/deployment/evaluation-rollout-guide/)** — for production use with real users or clients on the open core; adds production-fit limits and license-gated features. Free 90-day [evaluation license](https://getaxonflow.com/plugins/evaluation-license).
+3. **[AxonFlow Enterprise](https://docs.getaxonflow.com/docs/deployment/community-to-enterprise-migration/)** — production-grade governance, regulatory-grade controls, SLOs, and contractual commitments suitable for regulated industries. Contact [hello@getaxonflow.com](mailto:hello@getaxonflow.com).
+
+To skip Community SaaS entirely: set `AXONFLOW_ENDPOINT` to a self-hosted AxonFlow URL. That alone flips the plugin into self-hosted mode — the Community SaaS auto-bootstrap is not attempted, and no env var is required. Get the AxonFlow platform from [getaxonflow/axonflow](https://github.com/getaxonflow/axonflow) and follow the [Getting Started](https://docs.getaxonflow.com/docs/getting-started/) guide for the Docker Compose setup. For air-gapped environments where AxonFlow is not yet reachable but you want to suppress the bootstrap attempt, set `AXONFLOW_COMMUNITY_SAAS=0`; set `AXONFLOW_TELEMETRY=off` to also disable the anonymous 7-day heartbeat.
+
+LLM provider keys never leave the user's machine in any mode — Codex makes the LLM calls; AxonFlow only enforces policies and records audit trails.
+
+## Mode-specific reference
+
+The recommended self-hosted path is covered in [Install Step 1](#step-1-install-the-axonflow-platform). Two more modes worth knowing about:
+
+### Community SaaS — for early exploration only
+
+The plugin's zero-config fallback when neither `AXONFLOW_ENDPOINT` nor `AXONFLOW_AUTH` is configured. The plugin registers a tenant with `try.getaxonflow.com` on first run and persists credentials at `~/.config/axonflow/try-registration.json` (mode `0600`). Every hook invocation logs a one-line canary on stderr:
 
 ```
 [AxonFlow] Connected to AxonFlow at https://try.getaxonflow.com (mode=community-saas)
 ```
+
+**Use only for early exploration of the plugin's behaviour. Not for production workloads, regulated environments, real user data, personal data, or any other sensitive information.**
 
 | What goes to `try.getaxonflow.com` | What does NOT |
 |---|---|
@@ -156,26 +172,11 @@ If you do not set `AXONFLOW_ENDPOINT` or `AXONFLOW_AUTH`, the plugin connects to
 | Outbound message bodies before delivery (PII/secret scan) | Codex conversation history outside governed tools |
 | Anonymous 7-day heartbeat (plugin version, OS, runtime) | Files outside the Codex runtime |
 
-Community SaaS is intended for evaluation and prototyping. It has no SLA, no production guarantees, runs against shared Ollama models, and rate-limits at 20 req/min · 500 req/day per tenant. Read the [Try AxonFlow — Free Trial Server](https://docs.getaxonflow.com/docs/deployment/community-saas/) page for the full disclosure, including [data retention](https://docs.getaxonflow.com/docs/deployment/community-saas/#limitations-and-disclaimers) and [registration mechanics](https://docs.getaxonflow.com/docs/deployment/community-saas/#registration).
-
-### Self-hosted: your own AxonFlow
-
-For real workflows, real systems, or sensitive data, run AxonFlow on your own infrastructure via Docker Compose. Nothing leaves your network except the anonymous 7-day heartbeat. See the [Self-Hosted Deployment Guide](https://docs.getaxonflow.com/docs/deployment/self-hosted/) for prerequisites and production options.
-
-```bash
-git clone https://github.com/getaxonflow/axonflow.git
-cd axonflow && docker compose up -d
-
-# verify
-curl -s http://localhost:8080/health | jq .
-
-# point the plugin at your local agent
-export AXONFLOW_ENDPOINT=http://localhost:8080
-```
+The endpoint runs against shared Ollama models, rate-limits at 20 req/min · 500 req/day per tenant, and is offered "as is" on a best-effort basis with no SLA, no warranties, no commitment to retention or deletion timelines, and may be modified or discontinued without notice. Read the [Try AxonFlow — Free Trial Server](https://docs.getaxonflow.com/docs/deployment/community-saas/) page for the full disclosure, including [data retention](https://docs.getaxonflow.com/docs/deployment/community-saas/#limitations-and-disclaimers) and [registration mechanics](https://docs.getaxonflow.com/docs/deployment/community-saas/#registration).
 
 ### Air-gapped: zero outbound
 
-For environments where no outbound traffic is permitted at all, set both:
+For environments where no outbound traffic is permitted at all — air-gapped labs, regulated networks, classified deployments — set both env vars before the Codex process starts:
 
 ```bash
 export AXONFLOW_COMMUNITY_SAAS=0   # disable Community SaaS auto-bootstrap
@@ -189,21 +190,41 @@ With both env vars set and `AXONFLOW_ENDPOINT` pointing at a same-network instan
 
 ## Install
 
+This is a **three-step** install: stand up the AxonFlow platform, add the plugin to Codex, then point the plugin at the platform. The plugin alone does not enforce policy — its hook scripts are thin clients that talk to an AxonFlow agent gateway. If the platform is not installed and reachable, governed tool calls have nothing to evaluate against. **Skipping Step 3 is the most common mistake**: the platform is running locally but the plugin still falls back to Community SaaS because no `AXONFLOW_ENDPOINT` is configured.
+
 ### Prerequisites
 
 - [OpenAI Codex CLI](https://developers.openai.com/codex/cli)
 - `jq` and `curl` on `PATH`
 
-> An AxonFlow endpoint is **not** a prerequisite. If `AXONFLOW_ENDPOINT` and `AXONFLOW_AUTH` are unset, the plugin connects to AxonFlow Community SaaS at `https://try.getaxonflow.com` automatically. For real workloads, run AxonFlow yourself per the [Self-hosted](#self-hosted-your-own-axonflow) section above.
+### Step 1: install the AxonFlow platform
 
-### 1. Clone and install dependencies
+For any real workload, run AxonFlow on your own infrastructure via Docker Compose:
+
+```bash
+git clone https://github.com/getaxonflow/axonflow.git
+cd axonflow && docker compose up -d
+
+# verify
+curl -s http://localhost:8080/health | jq .
+```
+
+Follow the [Getting Started](https://docs.getaxonflow.com/docs/getting-started/) guide for prerequisites (Docker Engine or Desktop, Docker Compose v2, 4 GB RAM, 10 GB disk) and the [Self-Hosted Deployment Guide](https://docs.getaxonflow.com/docs/deployment/self-hosted/) for production options. For production with real users or clients, run Community Edition with a free 90-day [Evaluation License](https://docs.getaxonflow.com/docs/deployment/evaluation-rollout-guide/) or [AxonFlow Enterprise](https://docs.getaxonflow.com/docs/deployment/community-to-enterprise-migration/).
+
+> Skipping Step 1 makes the plugin fall back to the [Community SaaS](https://docs.getaxonflow.com/docs/deployment/community-saas/) endpoint at `try.getaxonflow.com` for early exploration only. **Do not skip Step 1 for any real workload** — see the [Privacy notice](#privacy-notice) above.
+
+### Step 2: install the plugin
+
+**No LLM provider keys are required** — Codex handles every LLM call; AxonFlow only evaluates policies and records audit trails.
+
+#### 2.1 Clone the plugin
 
 ```bash
 git clone https://github.com/getaxonflow/axonflow-codex-plugin.git
 cd axonflow-codex-plugin
 ```
 
-### 2. Point Codex at the AxonFlow MCP server
+#### 2.2 Point Codex at the AxonFlow MCP server
 
 Codex reads MCP config from `~/.codex/config.toml` (TOML), **not** from `.mcp.json` in the plugin directory:
 
@@ -215,7 +236,7 @@ url = "http://localhost:8080/api/v1/mcp-server"
 EOF
 ```
 
-### 3. Enable hooks and install the hook file
+#### 2.3 Enable hooks and install the hook file
 
 ```bash
 cat >> ~/.codex/config.toml << 'EOF'
@@ -228,7 +249,7 @@ cp hooks/hooks.json ~/.codex/hooks.json
 
 The `hooks.json` file uses relative paths (`./scripts/...`). Update those paths in `~/.codex/hooks.json` to the absolute location of the plugin's `scripts/` directory, or symlink so Codex can resolve them from the plugin checkout.
 
-### 4. Register the plugin in Codex's local marketplace
+#### 2.4 Register the plugin in Codex's local marketplace
 
 From the directory where you launch `codex`:
 
@@ -249,25 +270,34 @@ EOF
 codex   # then install via /plugins
 ```
 
-**No LLM provider keys are required** — Codex handles every LLM call; AxonFlow only evaluates policies and records audit trails. Pick a deployment mode from [Where your data goes](#where-your-data-goes) above before continuing to Configure.
+### Step 3: point the plugin at the platform
 
----
-
-## Configure
-
-The plugin defaults to AxonFlow Community SaaS — no environment variables required. Setting any of `AXONFLOW_ENDPOINT` or `AXONFLOW_AUTH` opts you into self-hosted mode and the plugin uses your values verbatim.
+Without this step the plugin auto-registers with Community SaaS regardless of whether you ran Step 1 — it does not auto-detect a locally-running AxonFlow. Set `AXONFLOW_ENDPOINT` (and `AXONFLOW_AUTH` if you have credentials):
 
 ```bash
-# Default (Community SaaS) — leave both unset, plugin auto-registers on first run
-unset AXONFLOW_ENDPOINT AXONFLOW_AUTH
-
-# Self-hosted local agent (any single env var is enough to opt in)
+# Self-hosted local agent — that alone flips mode to self-hosted, no other env var needed
 export AXONFLOW_ENDPOINT=http://localhost:8080
 
 # Self-hosted remote agent with credentials
 export AXONFLOW_ENDPOINT=https://axonflow.your-company.com
 export AXONFLOW_AUTH=$(echo -n "your-client-id:your-client-secret" | base64)
+```
 
+Every hook invocation logs a one-line canary on stderr confirming the active mode:
+
+```
+[AxonFlow] Connected to AxonFlow at http://localhost:8080 (mode=self-hosted)
+```
+
+If the canary says `mode=community-saas` after you ran Step 1, the plugin is still hitting `try.getaxonflow.com` because Step 3 was skipped or `AXONFLOW_ENDPOINT` is unset. Fix Step 3 and reload.
+
+---
+
+## Configure
+
+[Step 3](#step-3-point-the-plugin-at-the-platform) above covers `AXONFLOW_ENDPOINT` and `AXONFLOW_AUTH`. One more environment variable worth knowing about:
+
+```bash
 # Optional: longer request timeout for remote / VPN deployments
 export AXONFLOW_TIMEOUT_SECONDS=12
 ```
