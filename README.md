@@ -193,7 +193,8 @@ With both env vars set and `AXONFLOW_ENDPOINT` pointing at a same-network instan
 
 - [OpenAI Codex CLI](https://developers.openai.com/codex/cli)
 - `jq` and `curl` on `PATH`
-- An AxonFlow endpoint to govern against. **Optional** — if you skip this, the plugin connects to AxonFlow Community SaaS at `https://try.getaxonflow.com` automatically. For real workloads, run AxonFlow yourself per the [Self-hosted](#self-hosted-your-own-axonflow) section above.
+
+> An AxonFlow endpoint is **not** a prerequisite. If `AXONFLOW_ENDPOINT` and `AXONFLOW_AUTH` are unset, the plugin connects to AxonFlow Community SaaS at `https://try.getaxonflow.com` automatically. For real workloads, run AxonFlow yourself per the [Self-hosted](#self-hosted-your-own-axonflow) section above.
 
 ### 1. Clone and install dependencies
 
