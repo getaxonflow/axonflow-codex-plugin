@@ -138,13 +138,62 @@ Org-wide policies and session overrides are **Enterprise-only** — those are th
 
 ---
 
+## Where your data goes
+
+The plugin governs tool calls and outbound messages by sending each one to an AxonFlow endpoint for policy evaluation and audit. The endpoint is selected by which of `AXONFLOW_ENDPOINT` / `AXONFLOW_AUTH` you have set when the hooks fire.
+
+### Default: AxonFlow Community SaaS
+
+If you do not set `AXONFLOW_ENDPOINT` or `AXONFLOW_AUTH`, the plugin connects to **AxonFlow Community SaaS** at `https://try.getaxonflow.com` and registers a tenant on first run. Credentials persist at `~/.config/axonflow/try-registration.json` (mode `0600`). Every hook invocation logs a one-line canary on stderr so you always know which mode is active:
+
+```
+[AxonFlow] Connected to AxonFlow at https://try.getaxonflow.com (mode=community-saas)
+```
+
+| What goes to `try.getaxonflow.com` | What does NOT |
+|---|---|
+| Tool name + arguments before each governed call | LLM provider API keys |
+| Outbound message bodies before delivery (PII/secret scan) | Codex conversation history outside governed tools |
+| Anonymous 7-day heartbeat (plugin version, OS, runtime) | Files outside the Codex runtime |
+
+Community SaaS is intended for evaluation and prototyping. It has no SLA, runs against shared Ollama models, and rate-limits per tenant. Read the [Try AxonFlow — Free Trial Server](https://docs.getaxonflow.com/docs/deployment/community-saas/) page for the full disclosure, including data retention and registration mechanics.
+
+### Self-hosted: your own AxonFlow
+
+For real workflows, real systems, or sensitive data, run AxonFlow on your own infrastructure via Docker Compose. Nothing leaves your network except the anonymous 7-day heartbeat. See the [Self-Hosted Deployment Guide](https://docs.getaxonflow.com/docs/deployment/self-hosted/) for prerequisites and production options.
+
+```bash
+git clone https://github.com/getaxonflow/axonflow.git
+cd axonflow && docker compose up -d
+
+# verify
+curl -s http://localhost:8080/health | jq .
+
+# point the plugin at your local agent
+export AXONFLOW_ENDPOINT=http://localhost:8080
+```
+
+### Air-gapped: zero outbound
+
+For environments where no outbound traffic is permitted at all, set both:
+
+```bash
+export AXONFLOW_COMMUNITY_SAAS=0   # disable Community SaaS auto-bootstrap
+export AXONFLOW_TELEMETRY=off      # disable the anonymous 7-day heartbeat
+export AXONFLOW_ENDPOINT=http://your-internal-axonflow:8080
+```
+
+With both env vars set and `AXONFLOW_ENDPOINT` pointing at a same-network instance, no traffic leaves your environment.
+
+---
+
 ## Install
 
 ### Prerequisites
 
 - [OpenAI Codex CLI](https://developers.openai.com/codex/cli)
-- [AxonFlow](https://github.com/getaxonflow/axonflow) v6.0.0+ running (`docker compose up -d`)
 - `jq` and `curl` on `PATH`
+- An AxonFlow endpoint to govern against. **Optional** — if you skip this, the plugin connects to AxonFlow Community SaaS at `https://try.getaxonflow.com` automatically. For real workloads, run AxonFlow yourself per the [Self-hosted](#self-hosted-your-own-axonflow) section above.
 
 ### 1. Clone and install dependencies
 
@@ -199,32 +248,27 @@ EOF
 codex   # then install via /plugins
 ```
 
-### Start AxonFlow
-
-The plugin connects to AxonFlow, a self-hosted governance platform. **No LLM provider keys are required** — Codex handles every LLM call; AxonFlow only evaluates policies and records audit trails.
-
-```bash
-git clone https://github.com/getaxonflow/axonflow.git
-cd axonflow && docker compose up -d
-
-# verify
-curl -s http://localhost:8080/health | jq .
-```
+**No LLM provider keys are required** — Codex handles every LLM call; AxonFlow only evaluates policies and records audit trails. Pick a deployment mode from [Where your data goes](#where-your-data-goes) above before continuing to Configure.
 
 ---
 
 ## Configure
 
+The plugin defaults to AxonFlow Community SaaS — no environment variables required. Setting any of `AXONFLOW_ENDPOINT` or `AXONFLOW_AUTH` opts you into self-hosted mode and the plugin uses your values verbatim.
+
 ```bash
+# Default (Community SaaS) — leave both unset, plugin auto-registers on first run
+unset AXONFLOW_ENDPOINT AXONFLOW_AUTH
+
+# Self-hosted local agent (any single env var is enough to opt in)
 export AXONFLOW_ENDPOINT=http://localhost:8080
-export AXONFLOW_AUTH=""                # empty for community mode
-export AXONFLOW_TIMEOUT_SECONDS=12     # optional: remote/VPN deployments
-```
 
-For enterprise credentials:
-
-```bash
+# Self-hosted remote agent with credentials
+export AXONFLOW_ENDPOINT=https://axonflow.your-company.com
 export AXONFLOW_AUTH=$(echo -n "your-client-id:your-client-secret" | base64)
+
+# Optional: longer request timeout for remote / VPN deployments
+export AXONFLOW_TIMEOUT_SECONDS=12
 ```
 
 **Fail behavior:**
