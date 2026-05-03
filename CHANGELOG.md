@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **4 new agent-callable governance skills.** Codex agents can now use the
+  AxonFlow read-side governance surface directly in conversation:
+  `explain-decision` (full reasoning behind a previous decision),
+  `list-overrides` (active session overrides), `create-override`
+  (governed override with mandatory justification), and `revoke-override`.
+  Joins the existing `audit-search` skill for full read-side parity. The
+  underlying MCP tools are already exposed by the platform; these skills
+  document when and how the agent should invoke them.
+
 ## [1.0.0] - 2026-04-29 — Production, quality, and security hardening — upgrade encouraged
 
 **Upgrade strongly recommended.** Over the past month we've shipped substantial production, quality, and security hardening across the AxonFlow plugin and platform — upgrade to the latest version for a more secure, reliable, and bug-free experience.
