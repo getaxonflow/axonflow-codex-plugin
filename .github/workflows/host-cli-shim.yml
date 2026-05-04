@@ -1,0 +1,62 @@
+name: Host-CLI Shim
+
+# Higher-fidelity host-CLI smoke than test-hooks.sh / install-smoke.
+#
+# Stages the plugin payload as Codex would, parses the manifests
+# (.codex-plugin/plugin.json, hooks/hooks.json, .mcp.json), and drives
+# the discovered hook scripts through Codex's JSON-on-stdin contract
+# in lifecycle order (PreToolUse → tool → PostToolUse). Captures every
+# agent request via a stdlib HTTP stub and asserts the X-License-Token
+# forwarding contract across Free / Pro-env / Pro-axonflow.toml scenarios
+# + the PreToolUse-deny path (exit 2 + stderr).
+#
+# What this catches that the existing tests don't:
+#   - Manifest-driven hook discovery breaking (rename a script but forget
+#     hooks.json)
+#   - Lifecycle ordering regressions (PostToolUse running without
+#     PreToolUse first)
+#   - X-License-Token not reaching the wire when it should (Pro tier
+#     silent regression), including the malformed-token defense in
+#     lib/license-token.sh's AXON- prefix guard
+#   - .mcp.json's headersHelper missing or dropping X-License-Token
+#     (codex#43 — currently XFAIL)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+      - 'hooks/**'
+      - '.codex-plugin/**'
+      - '.mcp.json'
+      - 'tests/host-cli-shim/**'
+      - '.github/workflows/host-cli-shim.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+      - 'hooks/**'
+      - '.codex-plugin/**'
+      - '.mcp.json'
+      - 'tests/host-cli-shim/**'
+      - '.github/workflows/host-cli-shim.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: host-cli-shim-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  shim:
+    name: Host-CLI shim
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      AXONFLOW_TELEMETRY: 'off'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run host-CLI shim
+        run: bash tests/host-cli-shim/run.sh
