@@ -80,3 +80,47 @@ assert_output_contains() {
   local needle="$2"
   grep -q "$needle" "$output_file"
 }
+
+# Seed an override via the SAME unauthenticated MCP path codex uses, so the
+# tenant resolves to the same value (community in community-mode docker).
+# Direct REST seeds via /api/v1/overrides resolve to a different tenant
+# (demo-client) under community-mode auth, which would invisibly break
+# tenant-scoped lookups (revoke / explain) the agent later issues.
+# Echoes the override id on stdout, or empty string on failure.
+mcp_seed_override() {
+  local policy_id="${1:-sys_pii_email}"
+  local reason="${2:-mcp-seed}"
+  local ttl="${3:-300}"
+  local payload
+  payload=$(jq -n --arg pid "$policy_id" --arg r "$reason" --argjson ttl "$ttl" \
+    '{jsonrpc:"2.0",id:"1",method:"tools/call",params:{name:"create_override",arguments:{policy_id:$pid,policy_type:"static",override_reason:$r,ttl_seconds:$ttl}}}')
+  curl -s -X POST -H "Content-Type: application/json" -d "$payload" \
+    "$AXONFLOW_ENDPOINT/api/v1/mcp-server" \
+    | jq -r '.result.content[0].text // ""' \
+    | jq -r '.id // ""' 2>/dev/null
+}
+
+# Trigger a SQLi-block decision through the unauth MCP path so the resulting
+# decision_id + audit row land in the same tenant codex sees. Echoes the
+# decision_id on stdout.
+mcp_seed_block() {
+  local marker="${1:-mcp-block-$(date +%s)}"
+  local payload
+  payload=$(jq -n --arg m "SELECT * FROM users WHERE id=1 OR 1=1; -- $marker" \
+    '{jsonrpc:"2.0",id:"1",method:"tools/call",params:{name:"check_policy",arguments:{connector_type:"sql",statement:$m,operation:"query"}}}')
+  curl -s -X POST -H "Content-Type: application/json" -d "$payload" \
+    "$AXONFLOW_ENDPOINT/api/v1/mcp-server" \
+    | jq -r '.result.content[0].text // ""' \
+    | jq -r '.decision_id // ""' 2>/dev/null
+}
+
+# Revoke-by-id via unauth MCP for cleanup. Quiet on failure.
+mcp_cleanup_override() {
+  local id="$1"
+  [ -z "$id" ] && return
+  local payload
+  payload=$(jq -n --arg id "$id" \
+    '{jsonrpc:"2.0",id:"1",method:"tools/call",params:{name:"delete_override",arguments:{override_id:$id}}}')
+  curl -s -X POST -H "Content-Type: application/json" -d "$payload" \
+    "$AXONFLOW_ENDPOINT/api/v1/mcp-server" >/dev/null 2>&1 || true
+}

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Codex runtime E2E: revoke-override (W2 — rule #1)
+# Codex runtime E2E: revoke-override OUTCOME TEST (W2 — rule #1)
 #
-# Platform-side tool name is `delete_override`. Fabricated override_id
-# returns 404; that proves dispatch.
+# Seeds a real override, drives the Codex agent to revoke it via the
+# delete_override MCP tool, then asserts SERVER-SIDE that the override
+# is in fact revoked.
 
 set -uo pipefail
 
@@ -15,27 +16,51 @@ runtime_e2e_skip_if_unavailable
 trap codex_cleanup_mcp EXIT
 codex_register_mcp
 
-PROMPT="Call the mcp__${MCP_SERVER_NAME}__delete_override tool with override_id=\"runtime-e2e-fabricated-override-id-12345\". The platform will return a 404 because that override does not exist. After receiving the tool result, output exactly 'SMOKE_RESULT: ' followed by a one-line JSON summary like SMOKE_RESULT: {\"dispatched\":true,\"not_found\":true}."
+REASON_TAG="revoke-runtime-e2e-$(date +%s)-$RANDOM"
+echo "--- Seeding override via MCP path (same tenant codex sees) ---"
+
+SEED_ID=$(mcp_seed_override "sys_pii_email" "$REASON_TAG" 300)
+if [ -z "$SEED_ID" ]; then
+  echo "SKIP: pre-flight MCP create_override returned empty id"
+  exit 0
+fi
+echo "--- Seeded override id: $SEED_ID ---"
 
 OUTPUT_FILE=$(mktemp -t axonflow-codex-revoke.XXXXXX)
-trap 'rm -f "$OUTPUT_FILE"; codex_cleanup_mcp' EXIT
+cleanup() {
+  mcp_cleanup_override "$SEED_ID"
+  codex_cleanup_mcp
+  rm -f "${OUTPUT_FILE:-}"
+}
+trap cleanup EXIT
 
-echo "--- Running codex exec (delete_override, fabricated id, expect 404) ---"
+PROMPT="Call the mcp__${MCP_SERVER_NAME}__delete_override tool with override_id=\"$SEED_ID\". After the tool call, output exactly the literal text SMOKE_RESULT: followed by a single-line JSON like SMOKE_RESULT: {\"dispatched\":true,\"revoked\":true} on success."
+
+echo "--- Running codex exec ... ---"
 codex_exec_capture "$PROMPT" "$OUTPUT_FILE"
 
 errors=0
 
 if assert_mcp_started "$OUTPUT_FILE" "delete_override"; then
-  echo "PASS: Codex started the MCP tool call ($MCP_SERVER_NAME/delete_override)"
+  echo "PASS: Codex started the MCP tool call"
 else
-  echo "FAIL: Codex did not start any MCP tool call to $MCP_SERVER_NAME/delete_override"
+  echo "FAIL: Codex did not start the MCP tool call"
   errors=$((errors + 1))
 fi
 
-if assert_mcp_completed "$OUTPUT_FILE" "delete_override"; then
-  echo "PASS: Codex MCP tool call completed (live stack answered, even if 404)"
-elif assert_mcp_failed "$OUTPUT_FILE" "delete_override"; then
-  echo "INFO: Codex marked the call (failed) — platform error"
+# Outcome assertion — server-side state via the same unauth MCP path
+# (must query the same tenant the override was created in).
+SERVER_STATE=$(curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"list_overrides","arguments":{"include_revoked":true}}}' \
+  "$AXONFLOW_ENDPOINT/api/v1/mcp-server" \
+  | jq -r '.result.content[0].text // ""' \
+  | jq -r --arg id "$SEED_ID" '.overrides[]? | select(.id == $id) | .revoked_at // ""' 2>/dev/null)
+
+if [ -n "$SERVER_STATE" ] && [ "$SERVER_STATE" != "null" ]; then
+  echo "PASS: server-side state shows override $SEED_ID revoked at $SERVER_STATE — outcome verified"
+else
+  echo "FAIL: server-side state shows override $SEED_ID NOT revoked"
+  errors=$((errors + 1))
 fi
 
 if assert_smoke_result "$OUTPUT_FILE"; then
@@ -47,9 +72,8 @@ fi
 
 if [ "$errors" -gt 0 ]; then
   echo ""
-  echo "FAIL: $errors runtime-path assertion(s) failed"
-  tail -20 "$OUTPUT_FILE"
+  echo "FAIL: $errors outcome-test assertion(s) failed"
   exit 1
 fi
 echo ""
-echo "PASS: revoke-override — Codex agent dispatched delete_override through MCP runtime"
+echo "PASS: revoke-override outcome — agent dispatched, platform revoked, server state confirmed"

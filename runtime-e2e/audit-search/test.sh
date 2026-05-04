@@ -1,128 +1,86 @@
 #!/usr/bin/env bash
-# Plugin runtime E2E: real Codex agent invokes MCP tools (W2 — rule #1).
+# Codex runtime E2E: audit-search OUTCOME TEST (W2 — rule #1)
 #
-# This is the runtime-path test the W2 work has been missing. It registers
-# the AxonFlow MCP server in Codex's global config (the same step a user
-# would do — Codex doesn't auto-load plugin .mcp.json files), runs `codex
-# exec` non-interactively with a prompt that should trigger the new MCP
-# tool, captures the output, and asserts the agent invoked the tool
-# end-to-end against the live stack.
-#
-# Why this matters
-#
-# Rule #1 (no user-facing feature merges without one runtime-path test):
-# the user surface here is "agent picks an MCP tool from natural-language
-# context and invokes it." Direct JSON-RPC tools/call tests the wire under
-# the surface. This script tests the surface.
-#
-# Known product gap: Codex's HTTP MCP support is bearer-token-only and shows
-# `Auth: Unsupported` for our Basic-auth MCP server. In enterprise mode this
-# means Codex cannot authenticate. In community mode the agent is permissive
-# enough that calls still succeed for demo-client/demo-secret. Documenting
-# this honestly in the plugin README is the followup.
-#
-# Usage:
-#   AXONFLOW_ENDPOINT=http://localhost:8080 \
-#     bash tests/e2e/runtime-real-agent.sh
-#
-# Requirements:
-#   - `codex` CLI on PATH and authenticated
-#   - jq on PATH
-#   - Live AxonFlow stack reachable at AXONFLOW_ENDPOINT
-#
-# Exits 0 with SKIP when codex isn't authenticated or the stack isn't up.
+# Outcome verification, not just dispatch. Seeds a unique marker into
+# the platform's audit log via a real SQLi block, drives a real Codex
+# agent through search_audit_events, asserts the agent's reply
+# CONTAINS the marker.
 
 set -uo pipefail
 
-: "${AXONFLOW_ENDPOINT:=http://localhost:8080}"
-MCP_SERVER_NAME="axonflow_w2_e2e"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=../_lib/codex-runtime.sh
+source "$SCRIPT_DIR/../_lib/codex-runtime.sh"
 
-if ! command -v codex >/dev/null 2>&1; then
-  echo "SKIP: codex CLI not on PATH"
-  exit 0
-fi
-if ! command -v jq >/dev/null 2>&1; then
-  echo "SKIP: jq not on PATH"
-  exit 0
-fi
-if ! curl -sSf -o /dev/null --max-time 5 "$AXONFLOW_ENDPOINT/health"; then
-  echo "SKIP: AxonFlow stack not reachable at $AXONFLOW_ENDPOINT/health"
-  echo "      Start one via axonflow-enterprise scripts/setup-e2e-testing.sh"
-  exit 0
-fi
+runtime_e2e_skip_if_unavailable
 
-cleanup() {
-  codex mcp remove "$MCP_SERVER_NAME" >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
-
-# Register the AxonFlow MCP server in Codex's global config. This is the
-# same step a real Codex user would run after installing the plugin.
-codex mcp remove "$MCP_SERVER_NAME" >/dev/null 2>&1 || true
-codex mcp add "$MCP_SERVER_NAME" --url "$AXONFLOW_ENDPOINT/api/v1/mcp-server" >/dev/null
+trap codex_cleanup_mcp EXIT
+codex_register_mcp
 echo "--- Registered Codex MCP server: $MCP_SERVER_NAME -> $AXONFLOW_ENDPOINT/api/v1/mcp-server"
 
-# Drive a real Codex agent session non-interactively. --dangerously-bypass-
-# approvals-and-sandbox is required because Codex prompts for approval
-# before MCP calls otherwise, and there's no interactive TTY in CI.
-PROMPT="Call the mcp__${MCP_SERVER_NAME}__search_audit_events tool with limit=5 and report the result. Output starting with the literal text 'SMOKE_RESULT: ' followed by the JSON tool result on one line. Do nothing else."
+MARKER="w2-runtime-e2e-audit-marker-$(date +%s)-$RANDOM"
+echo "--- Seeding audit marker: $MARKER ---"
+curl -s -X POST \
+  -H "Authorization: Basic $(printf 'demo-client:demo-secret' | base64)" \
+  -H "Content-Type: application/json" \
+  -d "{\"connector_type\":\"sql\",\"statement\":\"SELECT * FROM users WHERE id=1 OR 1=1; -- $MARKER\",\"operation\":\"query\"}" \
+  "$AXONFLOW_ENDPOINT/api/v1/mcp/check-input" >/dev/null
+sleep 2
+
+DIRECT_HITS=$(curl -s -X POST \
+  -H "Authorization: Basic $(printf 'demo-client:demo-secret' | base64)" \
+  -H "Content-Type: application/json" \
+  -d '{"limit":50}' \
+  "$AXONFLOW_ENDPOINT/api/v1/audit/search" \
+  | jq --arg m "$MARKER" '[.entries[] | select((.query // "") | contains($m))] | length' 2>/dev/null)
+if [ "${DIRECT_HITS:-0}" -lt 1 ]; then
+  echo "SKIP: marker did not land in audit log via direct seed"
+  exit 0
+fi
+
+PROMPT="Call the mcp__${MCP_SERVER_NAME}__search_audit_events tool with limit=50 to fetch recent audit events. Then find any entry whose query field contains the substring '$MARKER' and report it. Output exactly the literal text SMOKE_RESULT: followed by a single-line JSON like SMOKE_RESULT: {\"marker_found\":true,\"audit_id\":\"...\"} if found, or SMOKE_RESULT: {\"marker_found\":false} if not."
+
+OUTPUT_FILE=$(mktemp -t axonflow-codex-audit.XXXXXX)
+trap 'codex_cleanup_mcp; rm -f "$OUTPUT_FILE"' EXIT
 
 echo "--- Running codex exec ... ---"
-RAW_OUTPUT=$(codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "$PROMPT" 2>&1) || EXIT_CODE=$?
-EXIT_CODE=${EXIT_CODE:-0}
-echo "--- codex exit: $EXIT_CODE ---"
+codex_exec_capture "$PROMPT" "$OUTPUT_FILE"
 
 errors=0
 
-# Assertion 1: Codex's MCP layer reports the tool call started + completed.
-# Codex prints diagnostic lines like:
-#   `mcp: <server>/<tool> started`
-#   `mcp: <server>/<tool> (completed)`
-# A failed call prints `(failed)` instead. We grep for the started+completed
-# pair to prove the agent actually dispatched.
-if printf '%s' "$RAW_OUTPUT" | grep -qE "mcp: $MCP_SERVER_NAME/search_audit_events started"; then
-  echo "PASS: Codex started the MCP tool call ($MCP_SERVER_NAME/search_audit_events)"
+if assert_mcp_started "$OUTPUT_FILE" "search_audit_events"; then
+  echo "PASS: Codex started the MCP tool call"
 else
-  echo "FAIL: Codex did not start any MCP tool call to $MCP_SERVER_NAME/search_audit_events"
-  echo "      (this is the rule-#1 evidence — without this, we shipped wiring not a feature)"
+  echo "FAIL: Codex did not start the MCP tool call"
   errors=$((errors + 1))
 fi
 
-if printf '%s' "$RAW_OUTPUT" | grep -qE "mcp: $MCP_SERVER_NAME/search_audit_events \(completed\)"; then
-  echo "PASS: Codex MCP tool call completed (not failed/cancelled)"
-elif printf '%s' "$RAW_OUTPUT" | grep -qE "mcp: $MCP_SERVER_NAME/search_audit_events \(failed\)"; then
-  echo "FAIL: Codex MCP tool call failed (server-side error or auth rejection)"
-  errors=$((errors + 1))
-elif printf '%s' "$RAW_OUTPUT" | grep -qE "user cancelled MCP tool call"; then
-  echo "FAIL: Codex prompted for approval and was cancelled — re-run with --dangerously-bypass-approvals-and-sandbox"
+if assert_mcp_completed "$OUTPUT_FILE" "search_audit_events"; then
+  echo "PASS: Codex MCP tool call completed"
+elif assert_mcp_failed "$OUTPUT_FILE" "search_audit_events"; then
+  echo "FAIL: Codex MCP tool call failed"
   errors=$((errors + 1))
 fi
 
-# Assertion 2: SMOKE_RESULT marker appears in agent output, proving the
-# agent consumed the tool result and produced a downstream response.
-if printf '%s' "$RAW_OUTPUT" | grep -q "SMOKE_RESULT:"; then
-  echo "PASS: agent emitted SMOKE_RESULT marker (full pipeline executed)"
+if assert_smoke_result "$OUTPUT_FILE"; then
+  echo "PASS: agent emitted SMOKE_RESULT marker"
 else
   echo "FAIL: agent did not emit SMOKE_RESULT marker"
   errors=$((errors + 1))
 fi
 
-# Assertion 3: the response shape includes the entries field. This proves
-# the platform actually answered (not a malformed response or auth-stub),
-# AND validates the entries:[] (not null) fix on the audit/search endpoint.
-if printf '%s' "$RAW_OUTPUT" | grep -qE 'SMOKE_RESULT:.*"entries"\s*:\s*\[' ; then
-  echo "PASS: response includes entries[] (audit/search nil-fix is in place)"
+if assert_output_contains "$OUTPUT_FILE" '"marker_found":true'; then
+  echo "PASS: agent's audit-search returned the marker we seeded — outcome verified"
 else
-  echo "FAIL: response missing entries[] field — server returned unexpected shape"
+  tail -10 "$OUTPUT_FILE" | sed 's/^/      /'
+  echo "FAIL: agent did NOT find the seeded marker"
   errors=$((errors + 1))
 fi
 
 if [ "$errors" -gt 0 ]; then
   echo ""
-  echo "FAIL: $errors runtime-path assertion(s) failed"
-  echo "--- raw output ---"
-  printf '%s\n' "$RAW_OUTPUT" | tail -20
+  echo "FAIL: $errors outcome-test assertion(s) failed"
   exit 1
 fi
 echo ""
-echo "PASS: runtime-real-agent — Codex agent dispatched search_audit_events end-to-end against the live stack"
+echo "PASS: audit-search outcome — Codex agent found a real marker event end-to-end"

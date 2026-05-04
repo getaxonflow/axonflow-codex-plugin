@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Codex runtime E2E: explain-decision (W2 — rule #1)
+# Codex runtime E2E: explain-decision OUTCOME TEST (W2 — rule #1)
 
 set -uo pipefail
 
@@ -12,47 +12,54 @@ runtime_e2e_skip_if_unavailable
 trap codex_cleanup_mcp EXIT
 codex_register_mcp
 
-PROMPT="Call the mcp__${MCP_SERVER_NAME}__explain_decision tool with decision_id=\"runtime-e2e-fabricated-id-12345\". The platform will return a not-found / negative response because that decision does not exist. After receiving the tool result, output exactly 'SMOKE_RESULT: ' followed by a one-line JSON summary like SMOKE_RESULT: {\"dispatched\":true,\"not_found\":true}. Nothing else."
+SEED_TAG="explain-runtime-e2e-$(date +%s)-$RANDOM"
+echo "--- Triggering platform block via MCP path (same tenant codex sees) ---"
+
+DECISION_ID=$(mcp_seed_block "$SEED_TAG")
+if [ -z "$DECISION_ID" ]; then
+  echo "SKIP: MCP seed block did not return a decision_id"
+  exit 0
+fi
+echo "--- Minted decision_id: $DECISION_ID ---"
+sleep 2
+
+PROMPT="Call the mcp__${MCP_SERVER_NAME}__explain_decision tool with decision_id=\"$DECISION_ID\". From the tool result, extract the policy name. Output exactly the literal text SMOKE_RESULT: followed by a single-line JSON like SMOKE_RESULT: {\"explanation_present\":true,\"policy_name\":\"...\"} or SMOKE_RESULT: {\"explanation_present\":false}."
 
 OUTPUT_FILE=$(mktemp -t axonflow-codex-explain.XXXXXX)
-trap 'rm -f "$OUTPUT_FILE"; codex_cleanup_mcp' EXIT
+trap 'codex_cleanup_mcp; rm -f "$OUTPUT_FILE"' EXIT
 
-echo "--- Running codex exec (explain_decision, fabricated id) ---"
+echo "--- Running codex exec ... ---"
 codex_exec_capture "$PROMPT" "$OUTPUT_FILE"
 
 errors=0
 
 if assert_mcp_started "$OUTPUT_FILE" "explain_decision"; then
-  echo "PASS: Codex started the MCP tool call ($MCP_SERVER_NAME/explain_decision)"
+  echo "PASS: Codex started the MCP tool call"
 else
-  echo "FAIL: Codex did not start any MCP tool call to $MCP_SERVER_NAME/explain_decision"
+  echo "FAIL: Codex did not start the MCP tool call"
   errors=$((errors + 1))
 fi
 
-if assert_mcp_completed "$OUTPUT_FILE" "explain_decision"; then
-  echo "PASS: Codex MCP tool call completed (live stack answered with explanation)"
-elif assert_mcp_failed "$OUTPUT_FILE" "explain_decision"; then
-  # The fabricated decision_id triggers a 404, which Codex marks as
-  # `(failed)`. That's still a successful runtime-path test — the call
-  # was dispatched and the platform answered with a structured negative.
-  # Only treat it as a real failure when the SMOKE_RESULT marker is
-  # also missing (handled by the next assertion).
-  echo "INFO: Codex marked the call (failed) — platform returned 404 for fabricated decision_id"
-fi
-
 if assert_smoke_result "$OUTPUT_FILE"; then
-  echo "PASS: agent emitted SMOKE_RESULT marker (full pipeline executed)"
+  echo "PASS: agent emitted SMOKE_RESULT marker"
 else
   echo "FAIL: agent did not emit SMOKE_RESULT marker"
   errors=$((errors + 1))
 fi
 
+if assert_output_contains "$OUTPUT_FILE" "Authentication Bypass" \
+  || assert_output_contains "$OUTPUT_FILE" "sys_sqli_admin_bypass"; then
+  echo "PASS: agent's reply names the policy that fired — outcome verified"
+else
+  tail -10 "$OUTPUT_FILE" | sed 's/^/      /'
+  echo "FAIL: agent did not name the policy from the explanation"
+  errors=$((errors + 1))
+fi
+
 if [ "$errors" -gt 0 ]; then
   echo ""
-  echo "FAIL: $errors runtime-path assertion(s) failed"
-  echo "--- raw output ---"
-  tail -20 "$OUTPUT_FILE"
+  echo "FAIL: $errors outcome-test assertion(s) failed"
   exit 1
 fi
 echo ""
-echo "PASS: explain-decision — Codex agent dispatched explain_decision through MCP runtime end-to-end"
+echo "PASS: explain-decision outcome — Codex agent fetched + surfaced a real platform decision end-to-end"
