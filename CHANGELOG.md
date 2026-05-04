@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- **V1 paid Pro tier — `X-License-Token` wire-up.** When `AXONFLOW_LICENSE_TOKEN` is set in the environment, or `license_token = "AXON-..."` is present in `~/.codex/axonflow.toml`, the plugin forwards the token as the `X-License-Token` HTTP header on every governed request (pre-tool policy check, post-tool audit + scan, and the long-lived MCP session). The agent's plugin-claim middleware validates the token's Ed25519 signature and database row, then enriches the request context with Pro-tier capabilities (longer audit retention, larger payload caps, higher daily quotas). Token absence is the free tier — no header is sent. Tokens that don't carry the canonical `AXON-` prefix are filtered out before the request leaves the plugin so the agent never sees garbage.
+- **Credential & license-token recovery surface — `scripts/recover.sh`.** Four sub-flows for users who need to manage credentials without leaving Codex:
+  - `request` — POSTs `/api/v1/recover` with the user's email so the agent emails a magic link with a one-time token.
+  - `verify` — POSTs `/api/v1/recover/verify` with the pasted token, then atomically persists the returned `tenant_id`, `secret`, `endpoint`, and `email` into `~/.codex/axonflow.toml` (mode `0600`, inside a `0700` parent). An existing `license_token` line is preserved so credential recovery never silently downgrades a Pro-tier user to the free tier.
+  - `apply-token` — persists a freshly-issued `AXON-...` Pro-tier license token into the same TOML file.
+  - `status` — reports the active endpoint, config file presence, license token presence, and current tier.
+  The same script powers two new agent-callable skills (`recover-credentials`, `pro-tier-status`) so Codex can guide a user through the flow when they say "I lost my credentials" or "am I on Pro?". For automation and runtime tests the script also reads `AXONFLOW_RECOVER_EMAIL`, `AXONFLOW_RECOVER_TOKEN`, and `AXONFLOW_LICENSE_TOKEN` from the environment instead of prompting.
+- **Runtime E2E coverage** for both surfaces:
+  - `runtime-e2e/v1-paid-tier/test.sh` — drives the pre-tool hook against a local capture server and asserts the `X-License-Token` header is sent (env, TOML, env-overrides-TOML, absence, malformed) plus the live agent middleware path when `/health` advertises `plugin_claim_license`.
+  - `runtime-e2e/recovery/test.sh` — drives `recover.sh` against a local fake recovery agent and asserts the full request → verify → persist → status path, including replay rejection and `license_token` preservation across credential re-recovery.
+
 ## [1.1.0] - 2026-05-04 — 4 read-side governance skills
 
 ### Added

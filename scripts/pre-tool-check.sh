@@ -60,6 +60,19 @@ if [ -n "$AUTH" ]; then
   AUTH_HEADER=(-H "Authorization: Basic $AUTH")
 fi
 
+# V1 paid Pro tier (PR #1850): if a Pro-tier license token is present,
+# forward it on every governed request. The agent's PluginClaimMiddleware
+# (platform/agent/plugin_claim_middleware.go) reads the X-License-Token
+# header, validates Ed25519 signature + DB row, and stamps a Pro-tier
+# context that downstream handlers branch on for quota / retention /
+# capability enforcement. Token absence = free tier (no header sent).
+# shellcheck source=./lib/license-token.sh
+. "${SCRIPT_DIR}/lib/license-token.sh"
+axonflow_resolve_license_token
+if [ -n "${AXONFLOW_LICENSE_TOKEN_RESOLVED:-}" ]; then
+  AUTH_HEADER+=(-H "X-License-Token: ${AXONFLOW_LICENSE_TOKEN_RESOLVED}")
+fi
+
 # One-time positive disclosure when first connecting to Community SaaS. Stamp
 # is separate from telemetry so the disclosure fires exactly once per install,
 # independent of the 7-day heartbeat cadence.

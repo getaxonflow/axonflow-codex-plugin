@@ -309,6 +309,49 @@ export AXONFLOW_TIMEOUT_SECONDS=12
 
 ---
 
+## Pro tier (paid)
+
+The plugin runs in two tiers:
+
+- **Free** — no `X-License-Token` header sent; agent applies free-tier quotas, retention, and capability limits.
+- **Pro** — `X-License-Token: AXON-...` sent on every governed request; agent's plugin-claim middleware validates the Ed25519 signature + DB row and stamps a Pro-tier context (longer audit retention, larger payload caps, higher daily quotas).
+
+After buying through Stripe Checkout you'll receive an `AXON-`-prefixed license token by email. Install it one of two ways:
+
+```bash
+# Operator override / CI
+export AXONFLOW_LICENSE_TOKEN="AXON-...your-token..."
+
+# Persistent: write to ~/.codex/axonflow.toml (mode 0600)
+bash scripts/recover.sh apply-token
+```
+
+Check current tier and config:
+
+```bash
+bash scripts/recover.sh status
+```
+
+Token resolution order: `AXONFLOW_LICENSE_TOKEN` env var, then `license_token = "AXON-..."` in `~/.codex/axonflow.toml`. The plugin filters out tokens that don't carry the canonical `AXON-` prefix before sending so the agent never sees malformed values.
+
+## Recover lost credentials
+
+If you've lost your `AXONFLOW_AUTH` / tenant secret (and your tenant was registered with an email):
+
+```bash
+bash scripts/recover.sh request    # POSTs /api/v1/recover; agent emails magic link
+# (open email, click link, copy hex token)
+bash scripts/recover.sh verify     # POSTs /api/v1/recover/verify; persists new creds
+```
+
+The verify step writes the returned `tenant_id`, `secret`, `endpoint`, and `email` atomically into `~/.codex/axonflow.toml` (mode `0600`, inside a `0700` parent). An existing `license_token` line is preserved across recovery so you don't get silently downgraded from Pro to Free.
+
+For automation / CI / runtime tests, the script reads `AXONFLOW_RECOVER_EMAIL`, `AXONFLOW_RECOVER_TOKEN`, and `AXONFLOW_LICENSE_TOKEN` from the environment instead of prompting.
+
+Two new agent-callable skills (`recover-credentials` and `pro-tier-status`) let Codex guide a user through the same flows when they say things like *"I lost my AxonFlow credentials"* or *"am I on the Pro tier?"*.
+
+---
+
 ## What gets checked
 
 AxonFlow ships with **80+ built-in system policies** that apply to Codex automatically. No configuration required — new policies added to the platform are immediately enforced.
@@ -367,6 +410,8 @@ The skills are how Codex gets governance guidance for non-terminal tools — the
 | `governance-status` | Checking governance posture | Explicit |
 | `audit-search` | Searching compliance evidence | Explicit |
 | `policy-list` | Listing active policies | Explicit |
+| `recover-credentials` | Recovering lost credentials or installing a paid Pro license token | Implicit or explicit |
+| `pro-tier-status` | Checking which tier (free or Pro) the install is on | Implicit or explicit |
 
 ---
 
@@ -412,13 +457,22 @@ axonflow-codex-plugin/
 │   ├── pii-scan/
 │   ├── governance-status/
 │   ├── audit-search/
-│   └── policy-list/
+│   ├── policy-list/
+│   ├── recover-credentials/  # Magic-link recovery + Pro-tier token install
+│   └── pro-tier-status/      # Reports Free vs Pro tier
 ├── scripts/
 │   ├── pre-tool-check.sh    # Policy enforcement (PreToolUse)
 │   ├── post-tool-audit.sh   # Audit + PII scan (PostToolUse)
-│   ├── mcp-auth-headers.sh  # Basic-auth header generation for MCP
+│   ├── mcp-auth-headers.sh  # Basic-auth + X-License-Token headers for MCP
+│   ├── recover.sh           # request|verify|apply-token|status user surface
 │   ├── telemetry-ping.sh    # Anonymous telemetry (fires once per install)
-│   └── uninstall.sh         # Clean removal of hooks, config, and marketplace entry
+│   ├── uninstall.sh         # Clean removal of hooks, config, and marketplace entry
+│   └── lib/
+│       └── license-token.sh # Pro-tier token resolver + TOML config writer
+├── runtime-e2e/
+│   ├── v1-paid-tier/        # X-License-Token wire-up runtime test
+│   ├── recovery/            # Recovery surface runtime test
+│   └── ...                  # Read-side governance skill runtime tests
 └── tests/
     ├── test-hooks.sh        # Regression tests (mock + live)
     ├── E2E_TESTING_PLAYBOOK.md

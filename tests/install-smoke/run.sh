@@ -45,7 +45,7 @@ pass() { echo "  PASS: $1"; PASS=$((PASS+1)); }
 
 # 1. Stage the plugin's install payload.
 echo "stage to $STAGE_DIR"
-mkdir -p "$STAGE_DIR/.codex-plugin" "$STAGE_DIR/hooks" "$STAGE_DIR/scripts"
+mkdir -p "$STAGE_DIR/.codex-plugin" "$STAGE_DIR/hooks" "$STAGE_DIR/scripts" "$STAGE_DIR/scripts/lib"
 cp -p "$PLUGIN_DIR/.codex-plugin/plugin.json" "$STAGE_DIR/.codex-plugin/" \
   || fail "missing .codex-plugin/plugin.json"
 cp -p "$PLUGIN_DIR/.mcp.json" "$STAGE_DIR/" \
@@ -54,12 +54,19 @@ cp -p "$PLUGIN_DIR/hooks/hooks.json" "$STAGE_DIR/hooks/" \
   || fail "missing hooks/hooks.json"
 cp -p "$PLUGIN_DIR/scripts/"*.sh "$STAGE_DIR/scripts/" \
   || fail "missing scripts/*.sh"
+# scripts/lib/ holds shared sourceable helpers (license-token.sh as of the
+# V1 paid tier wire-up). pre-tool-check, post-tool-audit, mcp-auth-headers,
+# and recover.sh source from this directory at runtime, so it MUST be part
+# of the install payload.
+cp -p "$PLUGIN_DIR/scripts/lib/"*.sh "$STAGE_DIR/scripts/lib/" \
+  || fail "missing scripts/lib/*.sh"
 chmod +x "$STAGE_DIR/scripts/"*.sh
 
 # 2. Validate file list.
 for f in .codex-plugin/plugin.json .mcp.json hooks/hooks.json \
          scripts/pre-tool-check.sh scripts/post-tool-audit.sh \
-         scripts/telemetry-ping.sh scripts/mcp-auth-headers.sh; do
+         scripts/telemetry-ping.sh scripts/mcp-auth-headers.sh \
+         scripts/recover.sh scripts/lib/license-token.sh; do
   if [ -f "$STAGE_DIR/$f" ]; then pass "staged $f"
   else fail "missing $f after stage"
   fi
