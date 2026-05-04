@@ -274,6 +274,31 @@ else
   PASS "status redacts the license token (no full value in output)"
 fi
 
+# 6d: status MUST surface the upgrade URL so users know where to buy Pro.
+# The Stripe Payment Link (set by operators in Stripe Dashboard, fronted
+# by getaxonflow.com/pro) is the entry point for the buyer flow — without
+# this line, users have no way to find it from the plugin.
+if echo "$STATUS_OUT" | grep -qE 'upgrade\s+https?://'; then
+  PASS "status surfaces the upgrade URL"
+else
+  FAIL "status missing upgrade URL line: $STATUS_OUT"
+fi
+
+# 6e: status MUST surface the user's tenant_id when registration exists,
+# so the user can paste it into the Stripe Checkout custom field. Use a
+# stub registration file in TMP_HOME3 so the test is deterministic.
+TMP_REG_DIR=$(mktemp -d)
+mkdir -p "$TMP_REG_DIR/.config/axonflow"
+echo '{"tenant_id":"cs_status_test_tenant","secret":"redacted","endpoint":"https://try.getaxonflow.com"}' \
+  > "$TMP_REG_DIR/.config/axonflow/try-registration.json"
+STATUS_WITH_REG=$(HOME="$TMP_REG_DIR" AXONFLOW_LICENSE_TOKEN="$FAKE_TOKEN" bash "$RECOVER" status 2>&1 || true)
+if echo "$STATUS_WITH_REG" | grep -qF "cs_status_test_tenant"; then
+  PASS "status surfaces tenant_id from try-registration.json"
+else
+  FAIL "status missing tenant_id (expected cs_status_test_tenant): $STATUS_WITH_REG"
+fi
+rm -rf "$TMP_REG_DIR"
+
 # -----------------------------------------------------------------------------
 # Test 7: apply-token persists into TOML.
 # -----------------------------------------------------------------------------

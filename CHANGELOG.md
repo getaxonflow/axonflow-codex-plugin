@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`scripts/recover.sh status` now surfaces tenant_id + upgrade URL.** Free-tier users need to find their `tenant_id` (`cs_<uuid>`) to paste into the Stripe Checkout custom field at `getaxonflow.com/pro`. The status output now reads `~/.config/axonflow/try-registration.json` (the auto-bootstrap registration file) and prints the tenant_id alongside endpoint + license-token state. Adds an `upgrade` line (default `https://getaxonflow.com/pro`, override via `AXONFLOW_UPGRADE_URL`) and copy-paste-ready upgrade instructions. Token still redacted to last 4 chars (no full bearer credential in stdout — see PR #41).
+
 ### Added
 
 - **V1 paid Pro tier — `X-License-Token` wire-up.** When `AXONFLOW_LICENSE_TOKEN` is set in the environment, or `license_token = "AXON-..."` is present in `~/.codex/axonflow.toml`, the plugin forwards the token as the `X-License-Token` HTTP header on every governed request (pre-tool policy check, post-tool audit + scan, and the long-lived MCP session). The agent's plugin-claim middleware validates the token's Ed25519 signature and database row, then enriches the request context with Pro-tier capabilities (longer audit retention, larger payload caps, higher daily quotas). Token absence is the free tier — no header is sent. Tokens that don't carry the canonical `AXON-` prefix are filtered out before the request leaves the plugin so the agent never sees garbage.

@@ -253,6 +253,21 @@ cmd_status() {
   local cfg_present="no"
   [ -f "$file" ] && cfg_present="yes"
 
+  # Tenant ID — needed by the buyer to paste into Stripe Checkout's
+  # custom field at /pro. Source: try-registration.json (the file
+  # community-saas-bootstrap.sh writes after auto-registration). If the
+  # registration file is missing, the user hasn't bootstrapped yet (or
+  # lost the file — the recover flow can re-mint one).
+  local tenant_file="${AXONFLOW_CONFIG_DIR:-$HOME/.config/axonflow}/try-registration.json"
+  local tenant_id="(not registered yet — first agent call will auto-register, or run \`scripts/recover.sh request\`)"
+  if [ -f "$tenant_file" ] && command -v jq >/dev/null 2>&1; then
+    local found
+    found=$(jq -r '.tenant_id // empty' "$tenant_file" 2>/dev/null || true)
+    if [ -n "$found" ]; then
+      tenant_id="$found"
+    fi
+  fi
+
   local tier token_display
   if [ -n "${AXONFLOW_LICENSE_TOKEN_RESOLVED:-}" ]; then
     tier="Pro tier active"
@@ -270,16 +285,27 @@ cmd_status() {
     token_display="unset"
   fi
 
+  local upgrade_url="${AXONFLOW_UPGRADE_URL:-https://getaxonflow.com/pro}"
+
   cat <<EOF
 AxonFlow Codex plugin — status
 
   endpoint           ${AXONFLOW_ENDPOINT:-${ENDPOINT_DEFAULT}}
+  tenant_id          $tenant_id
   config file        $file (present=$cfg_present)
   license token      $token_display
   tier               $tier
+  upgrade            $upgrade_url
+
+To upgrade to Pro (\$9.99 one-time), copy your tenant_id above, then visit
+$upgrade_url, paste the tenant_id into the "Your AxonFlow tenant ID" field,
+and complete checkout. The license token arrives by email; set it via:
+  AXONFLOW_LICENSE_TOKEN=AXON-... codex …
+or persist with:
+  scripts/recover.sh apply-token
 
 License token resolution order: AXONFLOW_LICENSE_TOKEN env var, then
-license_token = "..." in $file. Set either to upgrade an install to Pro.
+license_token = "..." in $file.
 
 Recover lost credentials with:
   scripts/recover.sh request   # email magic link
