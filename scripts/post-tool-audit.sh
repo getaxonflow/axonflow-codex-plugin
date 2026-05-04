@@ -40,6 +40,18 @@ if [ -n "$AUTH" ]; then
   AUTH_HEADER=(-H "Authorization: Basic $AUTH")
 fi
 
+# V1 paid Pro tier (PR #1850): forward X-License-Token on the audit + scan
+# requests too — the agent's PluginClaimMiddleware applies to /api/v1/mcp-server
+# regardless of which MCP method is being invoked, so audit_tool_call and
+# check_output also need the header to land in the Pro-tier code path
+# (longer audit retention, larger payload caps, …).
+# shellcheck source=./lib/license-token.sh
+. "${SCRIPT_DIR}/lib/license-token.sh"
+axonflow_resolve_license_token
+if [ -n "${AXONFLOW_LICENSE_TOKEN_RESOLVED:-}" ]; then
+  AUTH_HEADER+=(-H "X-License-Token: ${AXONFLOW_LICENSE_TOKEN_RESOLVED}")
+fi
+
 # Read hook input from stdin
 INPUT=$(cat)
 

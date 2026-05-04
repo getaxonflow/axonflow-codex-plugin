@@ -53,8 +53,21 @@ EOF
 fi
 
 AUTH="${AXONFLOW_AUTH:-}"
-if [ -n "$AUTH" ]; then
-  echo "{\"Authorization\": \"Basic $AUTH\"}"
+
+# V1 paid Pro tier (PR #1850): if a license token is resolvable, attach it
+# to the MCP-session headers so the long-lived MCP connection lands in the
+# Pro-tier code path the same way the per-tool hooks do.
+# shellcheck source=./lib/license-token.sh
+. "${SCRIPT_DIR}/lib/license-token.sh"
+axonflow_resolve_license_token
+LICENSE_TOKEN="${AXONFLOW_LICENSE_TOKEN_RESOLVED:-}"
+
+if [ -n "$AUTH" ] && [ -n "$LICENSE_TOKEN" ]; then
+  printf '{"Authorization": "Basic %s", "X-License-Token": "%s"}\n' "$AUTH" "$LICENSE_TOKEN"
+elif [ -n "$AUTH" ]; then
+  printf '{"Authorization": "Basic %s"}\n' "$AUTH"
+elif [ -n "$LICENSE_TOKEN" ]; then
+  printf '{"X-License-Token": "%s"}\n' "$LICENSE_TOKEN"
 else
   echo "{}"
 fi
