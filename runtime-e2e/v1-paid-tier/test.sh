@@ -263,6 +263,17 @@ else
   FAIL "status did not report Pro tier: $STATUS_OUT"
 fi
 
+# 6c: status MUST NOT print the full token value to stdout — `status` is
+# routinely shared in support tickets / screen-recordings and the token is
+# a bearer credential. Allowed: a redacted summary like "set (AXON-...xxxx)"
+# that only echoes the last 4 chars (which alone are not sufficient to
+# replay the token). Forbidden: the literal token string anywhere.
+if echo "$STATUS_OUT" | grep -qF "$FAKE_TOKEN"; then
+  FAIL "status leaked the full license token to stdout (bearer credential leak)"
+else
+  PASS "status redacts the license token (no full value in output)"
+fi
+
 # -----------------------------------------------------------------------------
 # Test 7: apply-token persists into TOML.
 # -----------------------------------------------------------------------------

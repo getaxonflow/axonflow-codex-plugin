@@ -253,11 +253,21 @@ cmd_status() {
   local cfg_present="no"
   [ -f "$file" ] && cfg_present="yes"
 
-  local tier
+  local tier token_display
   if [ -n "${AXONFLOW_LICENSE_TOKEN_RESOLVED:-}" ]; then
     tier="Pro tier active"
+    # Never print the full token to a terminal — it's a bearer credential and
+    # `recover.sh status` may be screen-shared, copy-pasted into a support
+    # ticket, or logged. Show a fixed prefix + last 4 chars only, padding
+    # short tokens defensively so we never leak the middle.
+    local tail4="****"
+    if [ "${#AXONFLOW_LICENSE_TOKEN_RESOLVED}" -ge 4 ]; then
+      tail4="${AXONFLOW_LICENSE_TOKEN_RESOLVED: -4}"
+    fi
+    token_display="set (AXON-...${tail4})"
   else
     tier="Free tier (no AXON- license token configured)"
+    token_display="unset"
   fi
 
   cat <<EOF
@@ -265,7 +275,7 @@ AxonFlow Codex plugin — status
 
   endpoint           ${AXONFLOW_ENDPOINT:-${ENDPOINT_DEFAULT}}
   config file        $file (present=$cfg_present)
-  license token      ${AXONFLOW_LICENSE_TOKEN_RESOLVED:+set}${AXONFLOW_LICENSE_TOKEN_RESOLVED:-unset}
+  license token      $token_display
   tier               $tier
 
 License token resolution order: AXONFLOW_LICENSE_TOKEN env var, then
