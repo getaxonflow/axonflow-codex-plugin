@@ -36,7 +36,12 @@ PRE_HOOK="$PLUGIN_DIR/scripts/pre-tool-check.sh"
 RECOVER="$PLUGIN_DIR/scripts/recover.sh"
 
 AGENT_URL="${AGENT_URL:-${AXONFLOW_AGENT_URL:-http://localhost:8080}}"
-FAKE_TOKEN="${AXONFLOW_LICENSE_TOKEN:-AXON-runtime-e2e-fake.signature.placeholder}"
+# Fixed test token. We deliberately do NOT inherit AXONFLOW_LICENSE_TOKEN
+# from the parent env — a real user's token in the shell would taint
+# the "no token configured" assertions below.
+FAKE_TOKEN="AXON-runtime-e2e-fake.signature.placeholder"
+# Defensive: clear inherited token so the no-token sub-tests are clean.
+unset AXONFLOW_LICENSE_TOKEN
 
 pass=0
 fail=0

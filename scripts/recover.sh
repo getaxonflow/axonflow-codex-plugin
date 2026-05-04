@@ -41,8 +41,19 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=./lib/license-token.sh
 . "${SCRIPT_DIR}/lib/license-token.sh"
 
+# Endpoint resolution mirrors pre-tool-check.sh (ADR-048):
+#   - AXONFLOW_ENDPOINT explicitly set → use it (self-hosted or remote).
+#   - else AXONFLOW_AUTH set (self-hosted with creds, no explicit endpoint)
+#     → default to localhost:8080.
+#   - else → community-saas (try.getaxonflow.com).
 ENDPOINT_DEFAULT="https://try.getaxonflow.com"
-ENDPOINT="${AXONFLOW_ENDPOINT:-${ENDPOINT_DEFAULT}}"
+if [ -n "${AXONFLOW_ENDPOINT:-}" ]; then
+  ENDPOINT="$AXONFLOW_ENDPOINT"
+elif [ -n "${AXONFLOW_AUTH:-}" ]; then
+  ENDPOINT="http://localhost:8080"
+else
+  ENDPOINT="$ENDPOINT_DEFAULT"
+fi
 TIMEOUT="${AXONFLOW_TIMEOUT_SECONDS:-15}"
 
 err() {
