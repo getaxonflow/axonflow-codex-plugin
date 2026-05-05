@@ -301,7 +301,7 @@ rm -rf "$TMP_REG_DIR"
 
 # 6f: V1 SaaS Plugin Pro tier-line surface parity. The status `tier` line
 # must surface the JWT `exp` claim from the configured license token in
-# three shapes (matching cursor / claude / openclaw):
+# three shapes:
 #   - "Pro tier active (expires YYYY-MM-DD, N days remaining)"  (exp future)
 #   - "Free tier (Pro expired YYYY-MM-DD — visit ... to renew)" (exp past)
 #   - "Free tier (no AXON- license token configured)"            (no token)
