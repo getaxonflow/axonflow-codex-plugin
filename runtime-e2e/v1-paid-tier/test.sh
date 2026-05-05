@@ -299,6 +299,60 @@ else
 fi
 rm -rf "$TMP_REG_DIR"
 
+# 6f: V1 SaaS Plugin Pro tier-line surface parity. The status `tier` line
+# must surface the JWT `exp` claim from the configured license token in
+# three shapes (matching cursor / claude / openclaw):
+#   - "Pro tier active (expires YYYY-MM-DD, N days remaining)"  (exp future)
+#   - "Free tier (Pro expired YYYY-MM-DD — visit ... to renew)" (exp past)
+#   - "Free tier (no AXON- license token configured)"            (no token)
+mint_axon_jwt() {
+  local exp_epoch="$1"
+  local hdr
+  hdr=$(printf '%s' '{"alg":"EdDSA","typ":"JWT"}' | base64 | tr '+/' '-_' | tr -d '=')
+  local payload
+  payload=$(printf '{"sub":"smoke","exp":%s}' "$exp_epoch" | base64 | tr '+/' '-_' | tr -d '=')
+  local sig="placeholder-signature-padding-padding-padding-padding-padding-pa"
+  printf 'AXON-%s.%s.%s' "$hdr" "$payload" "$sig"
+}
+
+# Pro-active path: exp ~30d future. Expect explicit YYYY-MM-DD + days remaining.
+PRO_EXP=$(( $(date -u +%s) + 30 * 86400 ))
+PRO_TOKEN=$(mint_axon_jwt "$PRO_EXP")
+PRO_STATUS=$(HOME="$TMP_HOME3" AXONFLOW_LICENSE_TOKEN="$PRO_TOKEN" bash "$RECOVER" status 2>&1 || true)
+if echo "$PRO_STATUS" | grep -qE "tier[[:space:]]+Pro tier active \(expires [0-9]{4}-[0-9]{2}-[0-9]{2}, [0-9]+ days remaining\)"; then
+  PASS "status Pro-active tier line shape (expires YYYY-MM-DD, N days remaining)"
+else
+  FAIL "status Pro-active line missing expected shape: $PRO_STATUS"
+fi
+if echo "$PRO_STATUS" | grep -qF "$PRO_TOKEN"; then
+  FAIL "status leaked Pro-active token to stdout"
+else
+  PASS "status redacts Pro-active token"
+fi
+
+# Pro-expired path: exp ~365d past. Expect "Free tier (Pro expired YYYY-MM-DD — visit ... to renew)".
+EXPIRED_EXP=$(( $(date -u +%s) - 365 * 86400 ))
+EXPIRED_TOKEN=$(mint_axon_jwt "$EXPIRED_EXP")
+EXPIRED_STATUS=$(HOME="$TMP_HOME3" AXONFLOW_LICENSE_TOKEN="$EXPIRED_TOKEN" bash "$RECOVER" status 2>&1 || true)
+if echo "$EXPIRED_STATUS" | grep -qE "tier[[:space:]]+Free tier \(Pro expired [0-9]{4}-[0-9]{2}-[0-9]{2} — visit https?://[^ ]+ to renew\)"; then
+  PASS "status Pro-expired tier line shape (Pro expired YYYY-MM-DD — visit ... to renew)"
+else
+  FAIL "status Pro-expired line missing expected shape: $EXPIRED_STATUS"
+fi
+if echo "$EXPIRED_STATUS" | grep -qF "$EXPIRED_TOKEN"; then
+  FAIL "status leaked expired token to stdout"
+else
+  PASS "status redacts expired token"
+fi
+
+# Free path: no token at all. Expect "Free tier (no AXON- license token configured)".
+FREE_STATUS=$(HOME="$TMP_HOME3" bash "$RECOVER" status 2>&1 || true)
+if echo "$FREE_STATUS" | grep -qE "tier[[:space:]]+Free tier \(no AXON- license token configured\)"; then
+  PASS "status Free-tier line shape (no AXON- license token configured)"
+else
+  FAIL "status Free-tier line missing expected shape: $FREE_STATUS"
+fi
+
 # -----------------------------------------------------------------------------
 # Test 7: apply-token persists into TOML.
 # -----------------------------------------------------------------------------
