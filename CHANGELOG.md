@@ -4,6 +4,7 @@
 
 ### Changed
 
+- **`scripts/recover.sh status` tier line now surfaces Pro license expiry date.** The status output's `tier` line parses the JWT `exp` claim from the configured Pro license token and renders one of three shapes: `Pro tier active (expires YYYY-MM-DD, N days remaining)` when active, `Free tier (Pro expired YYYY-MM-DD — visit https://getaxonflow.com/pro to renew)` when the token is on disk but its `exp` has passed (plugin will not forward an expired token), or `Free tier (no AXON- license token configured)` when no token is loaded. Lets users see their renewal date without hitting the agent and catches the lapsed-token state before their next governed call. Display only — JWT signature validation remains the platform's job. Pre-existing `Pro tier active` and `Free tier` substring assertions still hold.
 - **`scripts/recover.sh status` now surfaces tenant_id + upgrade URL.** Free-tier users need to find their `tenant_id` (`cs_<uuid>`) to paste into the Stripe Checkout custom field at `getaxonflow.com/pro`. The status output now reads `~/.config/axonflow/try-registration.json` (the auto-bootstrap registration file) and prints the tenant_id alongside endpoint + license-token state. Adds an `upgrade` line (default `https://getaxonflow.com/pro`, override via `AXONFLOW_UPGRADE_URL`) and copy-paste-ready upgrade instructions. Token still redacted to last 4 chars (no full bearer credential in stdout — see PR #41).
 
 ### Added

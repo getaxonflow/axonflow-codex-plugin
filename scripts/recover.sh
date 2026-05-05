@@ -257,6 +257,48 @@ cmd_apply_token() {
   printf 'Pro-tier license token persisted. Restart Codex to pick it up.\n' >&2
 }
 
+# extract_jwt_exp <token>  →  prints unix-epoch integer to stdout, exits 0
+# on success, non-zero on any parse failure. Pure stdout/stderr; never
+# raises. The caller decides how to render a parse failure.
+#
+# AxonFlow license tokens are formatted `AXON-<JWT>` where <JWT> is a
+# standard `header.payload.signature` triple. We base64url-decode the
+# middle segment, then look for `"exp":<digits>`. Signature is NEVER
+# validated here — display only.
+extract_jwt_exp() {
+  local tok="$1"
+  [ -n "$tok" ] || return 1
+  local jwt="${tok#AXON-}"
+  local payload
+  payload=$(printf '%s' "$jwt" | cut -d. -f2)
+  [ -n "$payload" ] || return 1
+  payload=$(printf '%s' "$payload" | tr '_-' '/+')
+  local pad=$(( 4 - ${#payload} % 4 ))
+  if [ "$pad" -ne 4 ]; then
+    payload="${payload}$(printf '=%.0s' $(seq 1 "$pad"))"
+  fi
+  local decoded
+  decoded=$(printf '%s' "$payload" | base64 -d 2>/dev/null) \
+    || decoded=$(printf '%s' "$payload" | base64 -D 2>/dev/null) \
+    || return 1
+  [ -n "$decoded" ] || return 1
+  local exp
+  exp=$(printf '%s' "$decoded" | grep -oE '"exp"[[:space:]]*:[[:space:]]*[0-9]+' | head -1 | grep -oE '[0-9]+$')
+  [ -n "$exp" ] || return 1
+  printf '%s' "$exp"
+}
+
+# format_unix_to_date <unix-epoch>  →  prints YYYY-MM-DD (UTC) to stdout.
+format_unix_to_date() {
+  local epoch="$1"
+  [ -n "$epoch" ] || return 1
+  local out
+  out=$(date -u -d "@${epoch}" +%Y-%m-%d 2>/dev/null) \
+    || out=$(date -u -r "${epoch}" +%Y-%m-%d 2>/dev/null) \
+    || return 1
+  printf '%s' "$out"
+}
+
 cmd_status() {
   axonflow_resolve_license_token
   local file="${AXONFLOW_CODEX_CONFIG:-$HOME/.codex/axonflow.toml}"
@@ -278,9 +320,21 @@ cmd_status() {
     fi
   fi
 
+  local upgrade_url="${AXONFLOW_UPGRADE_URL:-https://getaxonflow.com/pro}"
+
+  # Tier-line resolution. Three shapes (V1 SaaS Plugin Pro tier-line
+  # surface parity across the AxonFlow plugin set):
+  #   - "Pro tier active (expires YYYY-MM-DD, N days remaining)"   exp future
+  #   - "Pro tier active (expires UNKNOWN — could not parse token)" parse fail
+  #   - "Free tier (Pro expired YYYY-MM-DD — visit <url> to renew)" exp past
+  #   - "Free tier (no AXON- license token configured)"            no token
+  #
+  # The leading "Pro tier active" / "Free tier" preserves the existing
+  # contract (runtime-e2e/v1-paid-tier/test.sh greps for "Pro tier active"
+  # and "Free tier") so we extend without breaking the older assertions.
   local tier token_display
+  local pro_expired_flag=0
   if [ -n "${AXONFLOW_LICENSE_TOKEN_RESOLVED:-}" ]; then
-    tier="Pro tier active"
     # Never print the full token to a terminal — it's a bearer credential and
     # `recover.sh status` may be screen-shared, copy-pasted into a support
     # ticket, or logged. Show a fixed prefix + last 4 chars only, padding
@@ -290,12 +344,33 @@ cmd_status() {
       tail4="${AXONFLOW_LICENSE_TOKEN_RESOLVED: -4}"
     fi
     token_display="set (AXON-...${tail4})"
+
+    local exp_epoch
+    exp_epoch=$(extract_jwt_exp "$AXONFLOW_LICENSE_TOKEN_RESOLVED" 2>/dev/null || true)
+    if [ -n "$exp_epoch" ]; then
+      local exp_date
+      exp_date=$(format_unix_to_date "$exp_epoch" 2>/dev/null || true)
+      if [ -n "$exp_date" ]; then
+        local now_epoch
+        now_epoch=$(date -u +%s)
+        if [ "$exp_epoch" -gt "$now_epoch" ]; then
+          local secs_left=$(( exp_epoch - now_epoch ))
+          local days_left=$(( (secs_left + 86399) / 86400 ))
+          tier="Pro tier active (expires ${exp_date}, ${days_left} days remaining)"
+        else
+          tier="Free tier (Pro expired ${exp_date} — visit ${upgrade_url} to renew)"
+          pro_expired_flag=1
+        fi
+      else
+        tier="Pro tier active (expires UNKNOWN — could not parse token)"
+      fi
+    else
+      tier="Pro tier active (expires UNKNOWN — could not parse token)"
+    fi
   else
     tier="Free tier (no AXON- license token configured)"
     token_display="unset"
   fi
-
-  local upgrade_url="${AXONFLOW_UPGRADE_URL:-https://getaxonflow.com/pro}"
 
   cat <<EOF
 AxonFlow Codex plugin — status
@@ -307,6 +382,20 @@ AxonFlow Codex plugin — status
   tier               $tier
   upgrade            $upgrade_url
 
+EOF
+
+  if [ "$pro_expired_flag" -eq 1 ]; then
+    cat <<EOF
+Your Pro license token is on disk but its 'exp' has passed; the plugin will
+not forward an expired token. After buying a renewal, replace the token via:
+  AXONFLOW_LICENSE_TOKEN=AXON-... codex …
+or persist with:
+  scripts/recover.sh apply-token
+
+EOF
+  fi
+
+  cat <<EOF
 To upgrade to Pro (\$9.99 one-time), copy your tenant_id above, then visit
 $upgrade_url, paste the tenant_id into the "Your AxonFlow tenant ID" field,
 and complete checkout. The license token arrives by email; set it via:
