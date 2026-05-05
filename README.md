@@ -334,6 +334,24 @@ bash scripts/recover.sh status
 
 Token resolution order: `AXONFLOW_LICENSE_TOKEN` env var, then `license_token = "AXON-..."` in `~/.codex/axonflow.toml`. The plugin filters out tokens that don't carry the canonical `AXON-` prefix before sending so the agent never sees malformed values.
 
+#### One-time MCP-session setup (required for Pro-tier MCP traffic)
+
+Per-call hooks (terminal command governance) carry your Pro-tier token automatically once `AXONFLOW_LICENSE_TOKEN` is set. **MCP-session traffic** (the long-lived connection codex opens to AxonFlow's MCP-server endpoint for tool discovery) needs a one-time setup because Codex's `mcp add` CLI doesn't expose a `--header` flag, but its `~/.codex/config.toml` schema does support `[mcp_servers.<n>.http_headers]` and `[mcp_servers.<n>.env_http_headers]` blocks. Run:
+
+```bash
+bash scripts/install-mcp-with-headers.sh
+```
+
+This registers AxonFlow as a codex MCP server AND patches your `~/.codex/config.toml` to inject `X-Axonflow-Client: codex-plugin/<version>` (static) plus `X-License-Token` and `Authorization` resolved from `AXONFLOW_LICENSE_TOKEN` and `AXONFLOW_AUTH` env vars at MCP-session time. The script is idempotent — safe to re-run after a plugin upgrade or token rotation.
+
+Verify with:
+
+```bash
+codex mcp get axonflow
+```
+
+The output should list non-empty `http_headers` and `env_http_headers` rows.
+
 ## Recover lost credentials
 
 If you've lost your `AXONFLOW_AUTH` / tenant secret (and your tenant was registered with an email):
