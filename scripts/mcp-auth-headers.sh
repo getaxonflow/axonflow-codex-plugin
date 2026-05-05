@@ -62,12 +62,19 @@ AUTH="${AXONFLOW_AUTH:-}"
 axonflow_resolve_license_token
 LICENSE_TOKEN="${AXONFLOW_LICENSE_TOKEN_RESOLVED:-}"
 
+# ADR-050 §4: every governed request to the agent carries X-Axonflow-Client
+# so the agent can derive request scope (plugin) and validate it against the
+# token's aud.scope via HasScope().
+# shellcheck disable=SC1091
+. "${SCRIPT_DIR}/client-header.sh"
+CLIENT_HEADER="${AXONFLOW_CLIENT_HEADER}"
+
 if [ -n "$AUTH" ] && [ -n "$LICENSE_TOKEN" ]; then
-  printf '{"Authorization": "Basic %s", "X-License-Token": "%s"}\n' "$AUTH" "$LICENSE_TOKEN"
+  printf '{"Authorization": "Basic %s", "X-License-Token": "%s", "X-Axonflow-Client": "%s"}\n' "$AUTH" "$LICENSE_TOKEN" "$CLIENT_HEADER"
 elif [ -n "$AUTH" ]; then
-  printf '{"Authorization": "Basic %s"}\n' "$AUTH"
+  printf '{"Authorization": "Basic %s", "X-Axonflow-Client": "%s"}\n' "$AUTH" "$CLIENT_HEADER"
 elif [ -n "$LICENSE_TOKEN" ]; then
-  printf '{"X-License-Token": "%s"}\n' "$LICENSE_TOKEN"
+  printf '{"X-License-Token": "%s", "X-Axonflow-Client": "%s"}\n' "$LICENSE_TOKEN" "$CLIENT_HEADER"
 else
-  echo "{}"
+  printf '{"X-Axonflow-Client": "%s"}\n' "$CLIENT_HEADER"
 fi

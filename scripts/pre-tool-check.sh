@@ -54,11 +54,18 @@ echo "[AxonFlow] Connected to AxonFlow at ${ENDPOINT} (mode=${AXONFLOW_MODE})" >
 . "${SCRIPT_DIR}/community-saas-bootstrap.sh"
 AUTH="${AXONFLOW_AUTH:-}"
 
+# ADR-050 §4: every governed request to the agent carries X-Axonflow-Client
+# so the agent can derive request scope (plugin) and validate it against the
+# token's aud.scope via HasScope().
+# shellcheck disable=SC1091
+. "${SCRIPT_DIR}/client-header.sh"
+
 # Build auth header array safely (avoids word-splitting)
 AUTH_HEADER=()
 if [ -n "$AUTH" ]; then
   AUTH_HEADER=(-H "Authorization: Basic $AUTH")
 fi
+AUTH_HEADER+=(-H "X-Axonflow-Client: ${AXONFLOW_CLIENT_HEADER}")
 
 # V1 paid Pro tier (PR #1850): if a Pro-tier license token is present,
 # forward it on every governed request. The agent's PluginClaimMiddleware

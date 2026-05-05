@@ -35,10 +35,16 @@ REQUEST_TIMEOUT_SECONDS="${AXONFLOW_TIMEOUT_SECONDS:-5}"
 . "${SCRIPT_DIR}/community-saas-bootstrap.sh"
 AUTH="${AXONFLOW_AUTH:-}"
 
+# ADR-050 §4: X-Axonflow-Client identifies the calling plugin so the agent
+# can derive request scope (plugin) and validate against the token's aud.scope.
+# shellcheck disable=SC1091
+. "${SCRIPT_DIR}/client-header.sh"
+
 AUTH_HEADER=()
 if [ -n "$AUTH" ]; then
   AUTH_HEADER=(-H "Authorization: Basic $AUTH")
 fi
+AUTH_HEADER+=(-H "X-Axonflow-Client: ${AXONFLOW_CLIENT_HEADER}")
 
 # V1 paid Pro tier (PR #1850): forward X-License-Token on the audit + scan
 # requests too — the agent's PluginClaimMiddleware applies to /api/v1/mcp-server

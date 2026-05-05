@@ -109,9 +109,14 @@ cmd_request() {
   # POST /api/v1/recover always returns 202 (anti-enumeration: agent does
   # not signal whether the email is registered). The user is told to
   # check inbox regardless.
+  # ADR-050 §4: identify ourselves to the agent so it can derive request scope.
+  # shellcheck disable=SC1091
+  local SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+  . "${SCRIPT_DIR}/client-header.sh"
   local body http_code
   body=$(curl -sS --max-time "$TIMEOUT" -X POST "$ENDPOINT/api/v1/recover" \
     -H "Content-Type: application/json" \
+    -H "X-Axonflow-Client: ${AXONFLOW_CLIENT_HEADER}" \
     -d "$(jq -n --arg e "$email" '{email:$e}')" \
     -w '\n%{http_code}' 2>/dev/null) || {
     err "network call to $ENDPOINT/api/v1/recover failed."
@@ -162,9 +167,14 @@ cmd_verify() {
       ;;
   esac
 
+  # ADR-050 §4: identify ourselves to the agent so it can derive request scope.
+  # shellcheck disable=SC1091
+  local SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+  . "${SCRIPT_DIR}/client-header.sh"
   local body http_code
   body=$(curl -sS --max-time "$TIMEOUT" -X POST "$ENDPOINT/api/v1/recover/verify" \
     -H "Content-Type: application/json" \
+    -H "X-Axonflow-Client: ${AXONFLOW_CLIENT_HEADER}" \
     -d "$(jq -n --arg t "$token" '{token:$t}')" \
     -w '\n%{http_code}' 2>/dev/null) || {
     err "network call to $ENDPOINT/api/v1/recover/verify failed."
