@@ -322,8 +322,8 @@ cmd_status() {
 
   local upgrade_url="${AXONFLOW_UPGRADE_URL:-https://getaxonflow.com/pro}"
 
-  # Tier-line resolution. Three shapes, matching cursor / claude / openclaw
-  # (V1 SaaS Plugin Pro tier-line surface parity):
+  # Tier-line resolution. Three shapes (V1 SaaS Plugin Pro tier-line
+  # surface parity across the AxonFlow plugin set):
   #   - "Pro tier active (expires YYYY-MM-DD, N days remaining)"   exp future
   #   - "Pro tier active (expires UNKNOWN — could not parse token)" parse fail
   #   - "Free tier (Pro expired YYYY-MM-DD — visit <url> to renew)" exp past
