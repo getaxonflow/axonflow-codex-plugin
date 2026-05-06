@@ -320,7 +320,7 @@ cmd_status() {
     fi
   fi
 
-  local upgrade_url="${AXONFLOW_UPGRADE_URL:-https://www.getaxonflow.com/pricing/}"
+  local upgrade_url="${AXONFLOW_UPGRADE_URL:-https://getaxonflow.com/pricing/}"
 
   # Tier-line resolution. Three shapes (V1 SaaS Plugin Pro tier-line
   # surface parity across the AxonFlow plugin set):

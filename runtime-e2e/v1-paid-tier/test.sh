@@ -276,7 +276,7 @@ fi
 
 # 6d: status MUST surface the upgrade URL so users know where to buy Pro.
 # The Stripe Payment Link (set by operators in Stripe Dashboard, fronted
-# by www.getaxonflow.com/pricing/) is the entry point for the buyer flow — without
+# by getaxonflow.com/pricing/) is the entry point for the buyer flow — without
 # this line, users have no way to find it from the plugin.
 if echo "$STATUS_OUT" | grep -qE 'upgrade\s+https?://'; then
   PASS "status surfaces the upgrade URL"

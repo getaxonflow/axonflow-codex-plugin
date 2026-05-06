@@ -20,7 +20,7 @@ The script's `tier` line takes one of three shapes — surface whichever one the
 
 - `tier   Pro tier active (expires 2026-08-03, 90 days remaining)` — paid Pro tier active.
 - `tier   Pro tier active (expires UNKNOWN — could not parse token)` — token configured but the JWT body did not parse. Treat as Pro for display; the platform is the source of truth on validity.
-- `tier   Free tier (Pro expired 2026-02-04 — visit https://www.getaxonflow.com/pricing/ to renew)` — token is on disk but its `exp` has passed. The plugin will not forward an expired token; the user must buy a renewal and replace the token via `AXONFLOW_LICENSE_TOKEN=<new>` or `scripts/recover.sh apply-token`.
+- `tier   Free tier (Pro expired 2026-02-04 — visit https://getaxonflow.com/pricing/ to renew)` — token is on disk but its `exp` has passed. The plugin will not forward an expired token; the user must buy a renewal and replace the token via `AXONFLOW_LICENSE_TOKEN=<new>` or `scripts/recover.sh apply-token`.
 - `tier   Free tier (no AXON- license token configured)` — no token loaded.
 
 When the user lands on `Free tier (Pro expired …)`, point them at the renew URL embedded in the line and the `scripts/recover.sh apply-token` hint the script prints below.
