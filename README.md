@@ -313,10 +313,12 @@ export AXONFLOW_TIMEOUT_SECONDS=12
 
 The plugin runs in two tiers:
 
-- **Free** — no `X-License-Token` header sent; agent applies free-tier quotas, retention, and capability limits.
-- **Pro** — `X-License-Token: AXON-...` sent on every governed request; agent's plugin-claim middleware validates the Ed25519 signature + DB row and stamps a Pro-tier context (longer audit retention, larger payload caps, higher daily quotas).
+- **Free** — no `X-License-Token` header sent; agent applies free-tier quotas (3-day audit retention, 200 governed events / day).
+- **Pro** — `X-License-Token: AXON-...` sent on every governed request; agent's plugin-claim middleware validates the Ed25519 signature + DB row and stamps a Pro-tier context (30-day audit retention, 1,000 events / day, plus license-gated capabilities).
 
-After buying through Stripe Checkout you'll receive an `AXON-`-prefixed license token by email. Install it one of two ways:
+Pro is **$9.99 USD for 90 days**, one-time payment, no auto-renewal, 14-day no-questions refund. See [www.getaxonflow.com/pricing](https://www.getaxonflow.com/pricing/) for the full breakdown and the Stripe buy button.
+
+To upgrade: run `bash scripts/recover.sh status` to surface your `cs_<uuid>` tenant ID, then visit [www.getaxonflow.com/pricing](https://www.getaxonflow.com/pricing/) and paste it into the **AxonFlow tenant ID** custom field at Stripe Checkout. After buying through Stripe Checkout you'll receive an `AXON-`-prefixed license token by email. Install it one of two ways:
 
 ```bash
 # Operator override / CI
