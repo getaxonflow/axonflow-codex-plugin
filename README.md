@@ -313,18 +313,32 @@ export AXONFLOW_TIMEOUT_SECONDS=12
 
 The plugin runs in two tiers:
 
-- **Free** — no `X-License-Token` header sent; agent applies free-tier quotas, retention, and capability limits.
-- **Pro** — `X-License-Token: AXON-...` sent on every governed request; agent's plugin-claim middleware validates the Ed25519 signature + DB row and stamps a Pro-tier context (longer audit retention, larger payload caps, higher daily quotas).
+- **Free** — no `X-License-Token` header sent; agent applies free-tier quotas (3-day audit retention, 200 governed events / day).
+- **Pro** — `X-License-Token: AXON-...` sent on every governed request; agent's plugin-claim middleware validates the Ed25519 signature + DB row and stamps a Pro-tier context (30-day audit retention, 1,000 events / day, plus license-gated capabilities).
 
-After buying through Stripe Checkout you'll receive an `AXON-`-prefixed license token by email. Install it one of two ways:
+Pro is **$9.99 USD for 90 days**, one-time payment, no auto-renewal, 14-day no-questions refund. See [getaxonflow.com/pricing](https://getaxonflow.com/pricing/) for the full breakdown and the Stripe buy button.
 
-```bash
-# Operator override / CI
-export AXONFLOW_LICENSE_TOKEN="AXON-...your-token..."
+To activate Pro on this Codex install:
 
-# Persistent: write to ~/.codex/axonflow.toml (mode 0600)
-bash scripts/recover.sh apply-token
-```
+1. **Find your tenant ID.** From the plugin install root, run:
+
+    ```bash
+    bash scripts/recover.sh status
+    ```
+
+    The output includes a `tenant_id   cs_<uuid>` line — that's the value Stripe Checkout needs. Copy it. (Or ask the agent: "what is my AxonFlow tenant ID?" — the [`pro-tier-status` skill](#agent-skills) will run the script and surface the value.)
+
+2. **Buy at the pricing page.** Visit [getaxonflow.com/pricing](https://getaxonflow.com/pricing/) and click **Buy Plugin Pro — $9.99**. At Stripe Checkout, paste your `tenant_id` into the **AxonFlow tenant ID** custom field.
+
+3. **Install the issued license token.** After checkout you'll receive an `AXON-...` token by email. Install it one of two ways:
+
+    ```bash
+    # Operator override / CI
+    export AXONFLOW_LICENSE_TOKEN="AXON-...your-token..."
+
+    # Persistent: write to ~/.codex/axonflow.toml (mode 0600)
+    bash scripts/recover.sh apply-token
+    ```
 
 Check current tier and config:
 
