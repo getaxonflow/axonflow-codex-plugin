@@ -38,6 +38,10 @@ the agent-side scope-validation header on every governed request via
   - `runtime-e2e/v1-paid-tier/test.sh` — drives the pre-tool hook against a local capture server and asserts the `X-License-Token` header is sent (env, TOML, env-overrides-TOML, absence, malformed) plus the live agent middleware path when `/health` advertises `plugin_claim_license`.
   - `runtime-e2e/recovery/test.sh` — drives `recover.sh` against a local fake recovery agent and asserts the full request → verify → persist → status path, including replay rejection and `license_token` preservation across credential re-recovery.
 
+### Fixed
+
+- **Upgrade-pointer URL aligned with the canonical pricing page.** `AXONFLOW_UPGRADE_URL` default (the URL surfaced by `scripts/recover.sh status` and the `pro-tier-status` skill to free-tier users, plus embedded in the `tier   Free tier (Pro expired ... — visit ... to renew)` line) is now `https://getaxonflow.com/pricing/`. The previous default `https://getaxonflow.com/pro` returned 404 — that page was referenced in PRDs but never built. The pricing page already resolves and carries the Plugin Pro $9.99 tier card with the Stripe buy button, so plugin status output now points free-tier users at a working URL. Override via `AXONFLOW_UPGRADE_URL` env var if needed. Same fix landed in companion plugin releases (openclaw-plugin v2.2.0, claude-plugin v1.2.0, cursor-plugin v1.2.0).
+
 ## [1.1.0] - 2026-05-04 — 4 read-side governance skills
 
 ### Added
