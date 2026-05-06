@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-05-06 — V1 paid Pro tier wire-up + X-Axonflow-Client header
+
+Companion plugin release to platform v7.7.0. Surfaces the V1 SaaS Plugin
+Pro tier — license token paste activates Pro features immediately, plus
+the agent-side scope-validation header on every governed request via
+`.mcp.json`'s `http_headers` block.
+
+### Added
+
+- **`X-Axonflow-Client: codex/<version>` header** on every governed
+  agent request. Declared via `.mcp.json`'s `http_headers` block (set up
+  by `scripts/install-mcp-with-headers.sh` at install time) and exported
+  as `${AXONFLOW_CLIENT_HEADER}` by `pre-tool-check.sh` on every
+  hook-invoke. Agents at v7.7.0+ derive request scope from this header
+  and reject cross-quadrant token misuse (e.g. a SaaS Plugin Pro token
+  paired with an SDK request) at the validator boundary. Older agents
+  (pre-v7.7.0) ignore the header and continue to work unchanged.
+
 ### Changed
 
 - **`scripts/recover.sh status` tier line now surfaces Pro license expiry date.** The status output's `tier` line parses the JWT `exp` claim from the configured Pro license token and renders one of three shapes: `Pro tier active (expires YYYY-MM-DD, N days remaining)` when active, `Free tier (Pro expired YYYY-MM-DD — visit https://getaxonflow.com/pro to renew)` when the token is on disk but its `exp` has passed (plugin will not forward an expired token), or `Free tier (no AXON- license token configured)` when no token is loaded. Lets users see their renewal date without hitting the agent and catches the lapsed-token state before their next governed call. Display only — JWT signature validation remains the platform's job. Pre-existing `Pro tier active` and `Free tier` substring assertions still hold.
