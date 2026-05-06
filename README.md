@@ -318,15 +318,27 @@ The plugin runs in two tiers:
 
 Pro is **$9.99 USD for 90 days**, one-time payment, no auto-renewal, 14-day no-questions refund. See [www.getaxonflow.com/pricing](https://www.getaxonflow.com/pricing/) for the full breakdown and the Stripe buy button.
 
-To upgrade: run `bash scripts/recover.sh status` to surface your `cs_<uuid>` tenant ID, then visit [www.getaxonflow.com/pricing](https://www.getaxonflow.com/pricing/) and paste it into the **AxonFlow tenant ID** custom field at Stripe Checkout. After buying through Stripe Checkout you'll receive an `AXON-`-prefixed license token by email. Install it one of two ways:
+To activate Pro on this Codex install:
 
-```bash
-# Operator override / CI
-export AXONFLOW_LICENSE_TOKEN="AXON-...your-token..."
+1. **Find your tenant ID.** From the plugin install root, run:
 
-# Persistent: write to ~/.codex/axonflow.toml (mode 0600)
-bash scripts/recover.sh apply-token
-```
+    ```bash
+    bash scripts/recover.sh status
+    ```
+
+    The output includes a `tenant_id   cs_<uuid>` line — that's the value Stripe Checkout needs. Copy it. (Or ask the agent: "what is my AxonFlow tenant ID?" — the [`pro-tier-status` skill](#agent-skills) will run the script and surface the value.)
+
+2. **Buy at the pricing page.** Visit [www.getaxonflow.com/pricing](https://www.getaxonflow.com/pricing/) and click **Buy Plugin Pro — $9.99**. At Stripe Checkout, paste your `tenant_id` into the **AxonFlow tenant ID** custom field.
+
+3. **Install the issued license token.** After checkout you'll receive an `AXON-...` token by email. Install it one of two ways:
+
+    ```bash
+    # Operator override / CI
+    export AXONFLOW_LICENSE_TOKEN="AXON-...your-token..."
+
+    # Persistent: write to ~/.codex/axonflow.toml (mode 0600)
+    bash scripts/recover.sh apply-token
+    ```
 
 Check current tier and config:
 
