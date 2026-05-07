@@ -1,0 +1,1 @@
+Use the axonflow_v1_pro_e2e MCP server's axonflow_get_cost_estimate tool with arguments {"plan": "runtime-e2e probe"}. If the tool isn't available, just say 'tool_not_available' and don't fall back to anything else.

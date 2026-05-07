@@ -1,0 +1,45 @@
+Reading additional input from stdin...
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/saurabhjain/Development/axonflow-codex-plugin
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019e026d-5665-7f00-90db-99a7d9be873f
+--------
+user
+Use the axonflow_v1_pro_e2e MCP server's axonflow_create_tenant_policy tool with arguments {"name": "runtime-e2e-codex-20260507T123209Z", "description": "runtime-e2e probe", "connector_type": "codex.exec_command", "pattern": "axonflow-runtime-e2e-marker", "action": "warn"}. Print the response.
+codex
+Calling the AxonFlow tenant policy creation tool with the exact arguments you provided, then I’ll relay the raw response.
+mcp: axonflow_v1_pro_e2e/axonflow_create_tenant_policy started
+mcp: axonflow_v1_pro_e2e/axonflow_create_tenant_policy (completed)
+codex
+```json
+{
+  "action": "warn",
+  "connector_type": "codex.exec_command",
+  "enabled": true,
+  "id": "00516a74-fc8a-4b06-809f-765e0a9d8c33",
+  "message": "Created tenant-scoped policy \"runtime-e2e-codex-20260507T123209Z\". It will apply to subsequent governed calls.",
+  "name": "runtime-e2e-codex-20260507T123209Z",
+  "pattern": "axonflow-runtime-e2e-marker",
+  "policy_id": "tenant-cs_e10b804e--895e14cb-d8a5-4e7d-9833-1c05f6dcb031"
+}
+```
+tokens used
+12.764
+```json
+{
+  "action": "warn",
+  "connector_type": "codex.exec_command",
+  "enabled": true,
+  "id": "00516a74-fc8a-4b06-809f-765e0a9d8c33",
+  "message": "Created tenant-scoped policy \"runtime-e2e-codex-20260507T123209Z\". It will apply to subsequent governed calls.",
+  "name": "runtime-e2e-codex-20260507T123209Z",
+  "pattern": "axonflow-runtime-e2e-marker",
+  "policy_id": "tenant-cs_e10b804e--895e14cb-d8a5-4e7d-9833-1c05f6dcb031"
+}
+```

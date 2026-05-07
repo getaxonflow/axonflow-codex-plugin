@@ -1,0 +1,111 @@
+Reading additional input from stdin...
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/saurabhjain/Development/axonflow-codex-plugin
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019e026c-b811-7143-bddf-d0233f57194d
+--------
+user
+Use the axonflow_v1_pro_e2e MCP server's axonflow_list_pro_features tool. Pass an empty arguments object {}. Print the response.
+codex
+I’m calling the AxonFlow MCP tool directly and will return its raw response.
+mcp: axonflow_v1_pro_e2e/axonflow_list_pro_features started
+mcp: axonflow_v1_pro_e2e/axonflow_list_pro_features (completed)
+codex
+```json
+{
+  "buy_url": "https://buy.stripe.com/bJe28qbztcdVchjdkw8k800",
+  "current_tier": "Free",
+  "differentiators": [
+    {
+      "capability": "Daily quota",
+      "free": "200 events/day",
+      "id": "daily_quota",
+      "pro": "2,000 events/day (10× Free)"
+    },
+    {
+      "capability": "Audit retention",
+      "free": "3 days",
+      "id": "audit_retention",
+      "pro": "30 days (10× Free)"
+    },
+    {
+      "capability": "Custom tenant policies",
+      "free": "2 active max",
+      "id": "active_policies",
+      "pro": "Unlimited"
+    },
+    {
+      "capability": "HITL approval gating",
+      "free": "1 per rolling 7 days",
+      "id": "hitl_approvals",
+      "pro": "Unlimited"
+    },
+    {
+      "capability": "LLM cost pre-flight",
+      "free": "Not available",
+      "id": "cost_preflight",
+      "pro": "Available"
+    }
+  ],
+  "pricing": {
+    "duration_days": 90,
+    "price_usd": 9.99,
+    "renewal": "one-time (re-purchase to extend; no auto-renewal)"
+  },
+  "tone": "Free validates the workflow. Pro removes the caps when AxonFlow becomes part of your real workflow.",
+  "upgrade_url": "https://getaxonflow.com/pricing/"
+}
+```
+tokens used
+12.397
+```json
+{
+  "buy_url": "https://buy.stripe.com/bJe28qbztcdVchjdkw8k800",
+  "current_tier": "Free",
+  "differentiators": [
+    {
+      "capability": "Daily quota",
+      "free": "200 events/day",
+      "id": "daily_quota",
+      "pro": "2,000 events/day (10× Free)"
+    },
+    {
+      "capability": "Audit retention",
+      "free": "3 days",
+      "id": "audit_retention",
+      "pro": "30 days (10× Free)"
+    },
+    {
+      "capability": "Custom tenant policies",
+      "free": "2 active max",
+      "id": "active_policies",
+      "pro": "Unlimited"
+    },
+    {
+      "capability": "HITL approval gating",
+      "free": "1 per rolling 7 days",
+      "id": "hitl_approvals",
+      "pro": "Unlimited"
+    },
+    {
+      "capability": "LLM cost pre-flight",
+      "free": "Not available",
+      "id": "cost_preflight",
+      "pro": "Available"
+    }
+  ],
+  "pricing": {
+    "duration_days": 90,
+    "price_usd": 9.99,
+    "renewal": "one-time (re-purchase to extend; no auto-renewal)"
+  },
+  "tone": "Free validates the workflow. Pro removes the caps when AxonFlow becomes part of your real workflow.",
+  "upgrade_url": "https://getaxonflow.com/pricing/"
+}
+```

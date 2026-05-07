@@ -1,0 +1,1 @@
+Use the axonflow_v1_pro_e2e MCP server's axonflow_get_tenant_id tool with an empty arguments object {}. Print the tenant_id from the response.
