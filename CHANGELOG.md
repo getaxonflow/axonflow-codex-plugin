@@ -2,6 +2,59 @@
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-05-07 — V1 Plugin Pro upgrade-prompt envelope + 5 new MCP tools surfaced
+
+Companion plugin release to platform v7.7.0 + agent PRs #1966 / #1968. Surfaces
+the V1 Plugin Pro structured upgrade envelope to the operator and documents
+the 5 new agent-callable MCP tools (closing umbrella
+axonflow-enterprise#1958 cross-plugin surfacing, sub-issue
+axonflow-enterprise#1964).
+
+### Added
+
+- **V1 Plugin Pro upgrade-prompt envelope handling** in both
+  `pre-tool-check.sh` (PreToolUse-equivalent) and `post-tool-audit.sh`
+  (PostToolUse-equivalent) hooks. When the agent returns a 429
+  (daily-quota) or 403 (graduated / Pro-only) with the structured
+  envelope shape, the plugin:
+  - Parses `upgrade.wording` + `upgrade.buy_url` and prints a single-line
+    nudge to stderr (e.g. `[AxonFlow] Daily limit reached on Free tier
+    (200 events). Pro raises this to 2,000/day. Resets at midnight UTC.`).
+    Surfaced at most once per UTC day so it doesn't spam every hook.
+  - Honours `Retry-After` / `resets_at` by stamping a back-off file at
+    `${XDG_CACHE_HOME:-~/.cache}/axonflow/throttle-until`. Subsequent hook
+    fires fall open locally without re-hammering the agent until the
+    deadline passes. Prevents the silent-retry pattern (581 retries in
+    18h pre-envelope) that motivated this work.
+- **References to the 5 new agent-callable MCP tools** in the README.
+  The agent can answer `"what's my tenant ID?"`, `"what would I get on
+  Pro?"`, and related questions directly via:
+  - `axonflow_get_tenant_id` — Free + Pro, no gate.
+  - `axonflow_list_pro_features` — Free + Pro, locked feature list.
+  - `axonflow_request_approval` — Free 1/7d rolling, Pro unlimited.
+  - `axonflow_create_tenant_policy` — Free 2 active max, Pro unlimited.
+  - `axonflow_get_cost_estimate` — Pro-only, hidden from Free `tools/list`.
+
+  Auto-discovered via the existing MCP HTTP transport — no client-side
+  registration needed.
+
+### Changed
+
+- **README "Pro tier license token" section** corrected to the locked V1
+  numbers: 2,000 events/day (was 1,000), unlimited custom policies,
+  unlimited HITL approvals, and the LLM cost pre-flight feature added.
+- **README MCP-tools section** renumbered from "10 MCP tools" to "15 MCP
+  tools" to include the new V1 Pro tier-identity / tier-capability tools.
+
+### Internal
+
+- Added `runtime-e2e/v1_pro_envelope_surface/` per HARD RULE #0 — drives
+  a fresh Free-tier tenant past the 200/day cap on `try.getaxonflow.com`,
+  asserts the plugin's envelope helper prints the locked V1 wording to
+  stderr and stamps a throttle deadline.
+- Added `tests/test-upgrade-prompt.sh` — 21 unit assertions across 8
+  scenarios for every branch of the envelope handler.
+
 ## [1.2.0] - 2026-05-06 — V1 paid Pro tier wire-up + X-Axonflow-Client header
 
 Companion plugin release to platform v7.7.0. Surfaces the V1 SaaS Plugin
