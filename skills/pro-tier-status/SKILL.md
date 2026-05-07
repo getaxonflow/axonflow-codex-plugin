@@ -10,13 +10,13 @@ The Codex plugin runs in one of two tiers:
 
 Invoke the status surface in one of two ways:
 
-1. **Prefer the MCP tool when available.** The AxonFlow agent exposes `axonflow_get_tenant_id` via the `axonflow` MCP server (auto-discovered by Codex when `axonflow` is configured in `~/.codex/config.toml` MCP servers). If the tool is in the available toolset, call it first — it returns `tenant_id`, the caller's tier as resolved server-side, and the canonical `upgrade_url` + `buy_url`. The MCP path is auth-context-aware and avoids spawning a shell.
-
-2. **Fall back to the script** when the MCP tool isn't available (older agents, or the MCP server isn't wired in):
+1. **Prefer the local script — it answers without an agent round-trip.** `scripts/recover.sh status` reads `tenant_id` and tier directly from the plugin's persisted state (`~/.config/axonflow/try-registration.json`, the configured license token's JWT `exp` claim). No HTTP call to the agent. Faster, works offline, and works exactly when the user typically asks this question — while debugging the Stripe Checkout flow, when the agent isn't reachable yet, or when they just want a quick read on which tenant they're on. Tell the user: "I'll run `scripts/recover.sh status` to print your tenant_id, tier, and Pro license expiry locally — no agent round-trip." Invoke via `exec_command`:
 
 ```bash
 bash $PLUGIN_DIR/scripts/recover.sh status
 ```
+
+2. **Use the MCP tool only when the user explicitly wants server-truth.** The AxonFlow agent exposes `axonflow_get_tenant_id` via the `axonflow` MCP server (auto-discovered by Codex when `axonflow` is configured in `~/.codex/config.toml` MCP servers). It returns the same shape but resolved server-side, which catches edge cases the local script can't: a Pro license revoked by the platform, clock skew on JWT `exp`, or a server-side tier override. Use it when the user asks something like "is my Pro license still valid on the server" or "the agent is rejecting me, what does the agent see for me?". In all other cases the local script is sufficient and cheaper.
 
 ## Related agent-callable tools
 
