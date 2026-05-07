@@ -1,0 +1,43 @@
+Reading additional input from stdin...
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/saurabhjain/Development/axonflow-codex-plugin
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019e02e9-8b38-7e33-9975-db0e99d710d2
+--------
+user
+Use the axonflow_v1_pro_e2e MCP server's axonflow_request_approval tool with arguments {"original_query": "runtime-e2e probe", "request_type": "shell_command", "trigger_reason": "runtime_e2e_test", "severity": "low"}. Print the EXACT raw JSON response verbatim — do not paraphrase. The response will contain top-level 'success' and 'submitted' fields; preserve them in your output.
+codex
+Running the requested MCP approval call now and returning the raw JSON response verbatim.
+mcp: axonflow_v1_pro_e2e/axonflow_request_approval started
+mcp: axonflow_v1_pro_e2e/axonflow_request_approval (completed)
+codex
+{
+  "approval_id": "14",
+  "awaiting_review": true,
+  "message": "Approval request submitted successfully. A reviewer must approve this request via the AxonFlow customer portal before the operation can proceed.",
+  "original_query": "runtime-e2e probe",
+  "request_type": "shell_command",
+  "severity": "low",
+  "status": "pending",
+  "submitted": true,
+  "success": true
+}
+tokens used
+11.672
+{
+  "approval_id": "14",
+  "awaiting_review": true,
+  "message": "Approval request submitted successfully. A reviewer must approve this request via the AxonFlow customer portal before the operation can proceed.",
+  "original_query": "runtime-e2e probe",
+  "request_type": "shell_command",
+  "severity": "low",
+  "status": "pending",
+  "submitted": true,
+  "success": true
+}

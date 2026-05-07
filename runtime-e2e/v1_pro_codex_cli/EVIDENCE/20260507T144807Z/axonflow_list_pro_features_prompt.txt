@@ -1,0 +1,1 @@
+Use the axonflow_v1_pro_e2e MCP server's axonflow_list_pro_features tool. Pass an empty arguments object {}. Print the EXACT raw JSON response verbatim — do not paraphrase, summarize, or extract fields. The response will contain a top-level 'success' field; preserve it.

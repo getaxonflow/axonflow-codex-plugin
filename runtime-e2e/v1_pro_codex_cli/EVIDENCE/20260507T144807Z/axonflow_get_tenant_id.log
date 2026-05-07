@@ -1,0 +1,33 @@
+Reading additional input from stdin...
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/saurabhjain/Development/axonflow-codex-plugin
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019e02ea-0139-7463-a218-258ecf6f8314
+--------
+user
+Use the axonflow_v1_pro_e2e MCP server's axonflow_get_tenant_id tool with an empty arguments object {}. Print the EXACT raw JSON response verbatim — do not paraphrase or extract a single field. The response will contain top-level 'success' and 'tenant_id' fields; preserve them in your output.
+mcp: axonflow_v1_pro_e2e/axonflow_get_tenant_id started
+mcp: axonflow_v1_pro_e2e/axonflow_get_tenant_id (completed)
+codex
+{
+  "buy_url": "https://buy.stripe.com/bJe28qbztcdVchjdkw8k800",
+  "success": true,
+  "tenant_id": "cs_bfe55bf1-1e64-4264-966c-f162da7b85ae",
+  "tier": "Free",
+  "upgrade_url": "https://getaxonflow.com/pricing/"
+}
+tokens used
+11.473
+{
+  "buy_url": "https://buy.stripe.com/bJe28qbztcdVchjdkw8k800",
+  "success": true,
+  "tenant_id": "cs_bfe55bf1-1e64-4264-966c-f162da7b85ae",
+  "tier": "Free",
+  "upgrade_url": "https://getaxonflow.com/pricing/"
+}

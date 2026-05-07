@@ -1,0 +1,45 @@
+Reading additional input from stdin...
+OpenAI Codex v0.118.0 (research preview)
+--------
+workdir: /Users/saurabhjain/Development/axonflow-codex-plugin
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019e02e9-c79a-7aa1-8db4-47937a0041b1
+--------
+user
+Use the axonflow_v1_pro_e2e MCP server's axonflow_create_tenant_policy tool with arguments {"name": "runtime-e2e-codex-20260507T144807Z", "description": "runtime-e2e probe", "connector_type": "codex.exec_command", "pattern": "axonflow-runtime-e2e-marker", "action": "warn"}. Print the EXACT raw JSON response verbatim — do not paraphrase. The response will contain top-level 'success' and 'created' fields; preserve them in your output.
+codex
+Calling `axonflow_create_tenant_policy` with the exact arguments you provided, then I’ll return the raw JSON response verbatim.
+mcp: axonflow_v1_pro_e2e/axonflow_create_tenant_policy started
+mcp: axonflow_v1_pro_e2e/axonflow_create_tenant_policy (completed)
+codex
+{
+  "action": "warn",
+  "connector_type": "codex.exec_command",
+  "created": true,
+  "enabled": true,
+  "id": "49e6677c-e220-435b-aaf2-d9cb3d6f1671",
+  "message": "Successfully created tenant-scoped policy \"runtime-e2e-codex-20260507T144807Z\". It will apply to subsequent governed calls.",
+  "name": "runtime-e2e-codex-20260507T144807Z",
+  "pattern": "axonflow-runtime-e2e-marker",
+  "policy_id": "tenant-cs_bfe55bf1--62b8292d-ea62-487d-aa18-3e0b717db71e",
+  "success": true
+}
+tokens used
+22.631
+{
+  "action": "warn",
+  "connector_type": "codex.exec_command",
+  "created": true,
+  "enabled": true,
+  "id": "49e6677c-e220-435b-aaf2-d9cb3d6f1671",
+  "message": "Successfully created tenant-scoped policy \"runtime-e2e-codex-20260507T144807Z\". It will apply to subsequent governed calls.",
+  "name": "runtime-e2e-codex-20260507T144807Z",
+  "pattern": "axonflow-runtime-e2e-marker",
+  "policy_id": "tenant-cs_bfe55bf1--62b8292d-ea62-487d-aa18-3e0b717db71e",
+  "success": true
+}
