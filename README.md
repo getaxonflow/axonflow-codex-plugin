@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
-> **→ Full integration walkthrough:** **[docs.getaxonflow.com/docs/integration/codex](https://docs.getaxonflow.com/docs/integration/codex/)** — architecture, the hybrid governance model, policy examples, troubleshooting, and the 10 MCP tools the platform exposes.
+> **→ Full integration walkthrough:** **[docs.getaxonflow.com/docs/integration/codex](https://docs.getaxonflow.com/docs/integration/codex/)** — architecture, the hybrid governance model, policy examples, troubleshooting, and the 15 MCP tools the platform exposes.
 
 > **Upgrade strongly recommended.** AxonFlow ships substantial monthly security and quality hardening; staying on the latest major is the security-supported release line. [Latest release](https://github.com/getaxonflow/axonflow-codex-plugin/releases/latest) · [Security advisories](https://github.com/getaxonflow/axonflow-codex-plugin/security/advisories)
 
@@ -313,8 +313,8 @@ export AXONFLOW_TIMEOUT_SECONDS=12
 
 The plugin runs in two tiers:
 
-- **Free** — no `X-License-Token` header sent; agent applies free-tier quotas (3-day audit retention, 200 governed events / day).
-- **Pro** — `X-License-Token: AXON-...` sent on every governed request; agent's plugin-claim middleware validates the Ed25519 signature + DB row and stamps a Pro-tier context (30-day audit retention, 1,000 events / day, plus license-gated capabilities).
+- **Free** — no `X-License-Token` header sent; agent applies free-tier quotas (3-day audit retention, 200 governed events / day, 2 active custom policies, 1 HITL approval per rolling 7d).
+- **Pro** — `X-License-Token: AXON-...` sent on every governed request; agent's plugin-claim middleware validates the Ed25519 signature + DB row and stamps a Pro-tier context (30-day audit retention, **2,000 events / day**, **unlimited active custom policies**, **unlimited HITL approvals**, plus the **LLM cost pre-flight** tool — estimate token cost for a multi-step plan before it runs).
 
 Pro is **$9.99 USD for 90 days**, one-time payment, no auto-renewal, 14-day no-questions refund. See [getaxonflow.com/pricing](https://getaxonflow.com/pricing/) for the full breakdown and the Stripe buy button.
 
@@ -402,9 +402,9 @@ Custom policies are easy — `POST /api/v1/dynamic-policies` or the Customer Por
 
 ---
 
-## The 10 MCP tools Codex can call
+## The 15 MCP tools Codex can call
 
-Beyond the hook surface, the agent's MCP server exposes **10 tools** Codex can call directly. All served by the platform at `/api/v1/mcp-server`.
+Beyond the hook surface, the agent's MCP server exposes **15 tools** Codex can call directly. All served by the platform at `/api/v1/mcp-server`.
 
 ### Governance (6)
 
@@ -426,7 +426,32 @@ Beyond the hook surface, the agent's MCP server exposes **10 tools** Codex can c
 | `delete_override` | Revoke an active session override |
 | `list_overrides` | List active overrides scoped to the caller's tenant |
 
+### Tenant identity & tier capability (5 — V1 Plugin Pro)
+
+| Tool | Free access | Pro access |
+|------|-------------|------------|
+| `axonflow_get_tenant_id` | Visible + callable — returns tenant_id, server-resolved tier, upgrade URL | Same |
+| `axonflow_list_pro_features` | Visible + callable — locked Pro feature list (5 differentiators + $9.99 / 90-day pricing) | Same |
+| `axonflow_request_approval` | Visible + 1 per rolling 7d | Unlimited |
+| `axonflow_create_tenant_policy` | Visible + 2 active max | Unlimited |
+| `axonflow_get_cost_estimate` | Filtered out of `tools/list` — Pro-only | Visible + callable |
+
+When a Free-tier cap is hit on these tools, the agent returns a structured upgrade envelope (same shape as the 429 daily-quota envelope) and the plugin surfaces the upgrade prompt to stderr — see [Free-tier limits and upgrade prompts](#free-tier-limits-and-upgrade-prompts) below.
+
 See [Session Overrides](https://docs.getaxonflow.com/docs/governance/overrides/).
+
+---
+
+## Free-tier limits and upgrade prompts
+
+When the plugin's hooks hit a Free-tier cap (200 events/day, 2 active custom policies, 1 HITL approval per rolling 7d, or a Pro-only feature), the agent returns a structured upgrade envelope. The plugin parses it and prints a single-line nudge to stderr — visible in Codex's hook log:
+
+```
+[AxonFlow] Daily limit reached on Free tier (200 events). Pro raises this to 2,000/day. Resets at midnight UTC.
+[AxonFlow] Upgrade: https://buy.stripe.com/bJe28qbztcdVchjdkw8k800
+```
+
+The plugin also stamps a local back-off file from the response's `Retry-After` header so subsequent governed calls fall through immediately (no thundering herd against the agent) until the cap clears. The upgrade nudge is shown at most once per UTC day so it doesn't spam every hook.
 
 ---
 
@@ -462,7 +487,7 @@ Imperceptible in interactive Codex sessions.
 
 ## Sister integrations
 
-Same governance platform, same 80+ policies, same 10 MCP tools — different agent hosts:
+Same governance platform, same 80+ policies, same 15 MCP tools — different agent hosts:
 
 | Integration | Repo | Docs |
 |---|---|---|

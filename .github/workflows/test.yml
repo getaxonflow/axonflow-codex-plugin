@@ -41,3 +41,6 @@ jobs:
 
       - name: Run hook regression tests (mock server)
         run: bash tests/test-hooks.sh
+
+      - name: Run upgrade-prompt envelope-handler unit tests
+        run: bash tests/test-upgrade-prompt.sh

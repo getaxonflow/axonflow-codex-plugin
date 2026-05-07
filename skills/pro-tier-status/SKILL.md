@@ -8,11 +8,27 @@ The Codex plugin runs in one of two tiers:
 - **Free.** No `AXONFLOW_LICENSE_TOKEN` env var and no `license_token = "..."` line in `~/.codex/axonflow.toml` (or the line is there but its JWT `exp` is in the past — the plugin will not forward an expired token). The plugin omits the `X-License-Token` HTTP header on every governed request, and the agent applies free-tier quota / retention defaults.
 - **Pro tier active.** Either `AXONFLOW_LICENSE_TOKEN` is exported in the Codex environment (operator override; CI use) or `~/.codex/axonflow.toml` contains a `license_token = "AXON-..."` line whose JWT `exp` is in the future. The plugin sends `X-License-Token: <token>` on every governed request, and the agent's `PluginClaimMiddleware` validates the Ed25519 signature + DB row, then stamps a Pro-tier context on the request.
 
-Invoke the status surface via `exec_command`:
+Invoke the status surface in one of two ways:
+
+1. **Prefer the MCP tool when available.** The AxonFlow agent exposes `axonflow_get_tenant_id` via the `axonflow` MCP server (auto-discovered by Codex when `axonflow` is configured in `~/.codex/config.toml` MCP servers). If the tool is in the available toolset, call it first — it returns `tenant_id`, the caller's tier as resolved server-side, and the canonical `upgrade_url` + `buy_url`. The MCP path is auth-context-aware and avoids spawning a shell.
+
+2. **Fall back to the script** when the MCP tool isn't available (older agents, or the MCP server isn't wired in):
 
 ```bash
 bash $PLUGIN_DIR/scripts/recover.sh status
 ```
+
+## Related agent-callable tools
+
+When the AxonFlow MCP server is available, Codex can answer related questions directly via tool calls without spawning shell scripts:
+
+- `axonflow_get_tenant_id` — tenant identity + tier + upgrade URLs.
+- `axonflow_list_pro_features` — locked V1 Pro feature list (5 differentiators + $9.99 / 90 days pricing). Useful when the user asks "what would I get if I upgraded?".
+- `axonflow_request_approval` — file a HITL approval request before a risky operation (Free tier: 1 per rolling 7d; Pro: unlimited).
+- `axonflow_create_tenant_policy` — create a custom tenant policy (Free tier: 2 active max; Pro: unlimited).
+- `axonflow_get_cost_estimate` — pre-flight LLM cost for a multi-step plan. Pro-only — the tool isn't visible to Free callers.
+
+Prefer these tools over equivalent shell scripts when both exist; they are auth-context-aware on the server side and don't require local shell state.
 
 ## Tier line shape
 
