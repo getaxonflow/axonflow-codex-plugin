@@ -44,3 +44,6 @@ jobs:
 
       - name: Run upgrade-prompt envelope-handler unit tests
         run: bash tests/test-upgrade-prompt.sh
+
+      - name: Run skill-content assertion (pro-tier-status prefers local)
+        run: bash tests/test-skill-status-prefers-local.sh
