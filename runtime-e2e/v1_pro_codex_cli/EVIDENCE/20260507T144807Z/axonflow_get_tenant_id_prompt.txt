@@ -1,0 +1,1 @@
+Use the axonflow_v1_pro_e2e MCP server's axonflow_get_tenant_id tool with an empty arguments object {}. Print the EXACT raw JSON response verbatim — do not paraphrase or extract a single field. The response will contain top-level 'success' and 'tenant_id' fields; preserve them in your output.

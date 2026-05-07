@@ -8,12 +8,12 @@ approval: never
 sandbox: danger-full-access
 reasoning effort: high
 reasoning summaries: none
-session id: 019e026c-f733-7221-b8c2-3aab1b335c00
+session id: 019e02e9-61c5-7a82-a903-518c03aec241
 --------
 user
 Use the axonflow_v1_pro_e2e MCP server's axonflow_get_cost_estimate tool with arguments {"plan": "runtime-e2e probe"}. If the tool isn't available, just say 'tool_not_available' and don't fall back to anything else.
 codex
 tool_not_available
 tokens used
-10.965
+731
 tool_not_available

@@ -1,1 +1,0 @@
-Use the axonflow_v1_pro_e2e MCP server's axonflow_create_tenant_policy tool with arguments {"name": "runtime-e2e-codex-20260507T123209Z", "description": "runtime-e2e probe", "connector_type": "codex.exec_command", "pattern": "axonflow-runtime-e2e-marker", "action": "warn"}. Print the response.

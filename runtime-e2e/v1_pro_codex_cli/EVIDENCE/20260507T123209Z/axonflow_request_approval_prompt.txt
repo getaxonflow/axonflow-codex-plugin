@@ -1,1 +1,0 @@
-Use the axonflow_v1_pro_e2e MCP server's axonflow_request_approval tool with arguments {"original_query": "runtime-e2e probe", "request_type": "shell_command", "trigger_reason": "runtime_e2e_test", "severity": "low"}. Print the response.

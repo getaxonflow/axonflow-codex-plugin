@@ -214,7 +214,10 @@ run_tool() {
   echo "================ tool: $tool — expectation: $expectation ================"
   local out_file="$EVIDENCE/${tool}.log"
   echo "$prompt" > "$EVIDENCE/${tool}_prompt.txt"
-  timeout 90 codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox \
+  # Codex on gpt-5.4 high-reasoning can take 60-120s per tool invocation.
+  # 180s buffer handles slow-model + occasional MCP retry without making
+  # the test feel hung.
+  timeout 180 codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox \
     "$prompt" >"$out_file" 2>&1 || true
   echo "  captured $(wc -c <"$out_file") bytes to $(basename "$out_file")"
 
@@ -252,7 +255,7 @@ run_tool() {
 }
 
 run_tool "list_pro_features" \
-  "Use the ${MCP_SERVER_NAME} MCP server's axonflow_list_pro_features tool. Pass an empty arguments object {}. Print the response." \
+  "Use the ${MCP_SERVER_NAME} MCP server's axonflow_list_pro_features tool. Pass an empty arguments object {}. Print the EXACT raw JSON response verbatim — do not paraphrase, summarize, or extract fields. The response will contain a top-level 'success' field; preserve it." \
   "axonflow_list_pro_features" \
   "invoked_ok"
 
@@ -262,17 +265,17 @@ run_tool "get_cost_estimate_hidden" \
   "hidden_from_free_tier"
 
 run_tool "request_approval" \
-  "Use the ${MCP_SERVER_NAME} MCP server's axonflow_request_approval tool with arguments {\"original_query\": \"runtime-e2e probe\", \"request_type\": \"shell_command\", \"trigger_reason\": \"runtime_e2e_test\", \"severity\": \"low\"}. Print the response." \
+  "Use the ${MCP_SERVER_NAME} MCP server's axonflow_request_approval tool with arguments {\"original_query\": \"runtime-e2e probe\", \"request_type\": \"shell_command\", \"trigger_reason\": \"runtime_e2e_test\", \"severity\": \"low\"}. Print the EXACT raw JSON response verbatim — do not paraphrase. The response will contain top-level 'success' and 'submitted' fields; preserve them in your output." \
   "axonflow_request_approval" \
   "invoked_ok"
 
 run_tool "create_tenant_policy" \
-  "Use the ${MCP_SERVER_NAME} MCP server's axonflow_create_tenant_policy tool with arguments {\"name\": \"runtime-e2e-codex-${UTC_TS}\", \"description\": \"runtime-e2e probe\", \"connector_type\": \"codex.exec_command\", \"pattern\": \"axonflow-runtime-e2e-marker\", \"action\": \"warn\"}. Print the response." \
+  "Use the ${MCP_SERVER_NAME} MCP server's axonflow_create_tenant_policy tool with arguments {\"name\": \"runtime-e2e-codex-${UTC_TS}\", \"description\": \"runtime-e2e probe\", \"connector_type\": \"codex.exec_command\", \"pattern\": \"axonflow-runtime-e2e-marker\", \"action\": \"warn\"}. Print the EXACT raw JSON response verbatim — do not paraphrase. The response will contain top-level 'success' and 'created' fields; preserve them in your output." \
   "axonflow_create_tenant_policy" \
   "invoked_ok"
 
 run_tool "get_tenant_id" \
-  "Use the ${MCP_SERVER_NAME} MCP server's axonflow_get_tenant_id tool with an empty arguments object {}. Print the tenant_id from the response." \
+  "Use the ${MCP_SERVER_NAME} MCP server's axonflow_get_tenant_id tool with an empty arguments object {}. Print the EXACT raw JSON response verbatim — do not paraphrase or extract a single field. The response will contain top-level 'success' and 'tenant_id' fields; preserve them in your output." \
   "axonflow_get_tenant_id" \
   "invoked_ok"
 
@@ -286,6 +289,36 @@ if grep -qF "$TENANT" "$EVIDENCE/axonflow_get_tenant_id.log"; then
 else
   fail "axonflow_get_tenant_id reply did NOT contain $TENANT"
 fi
+
+# ---------------------------------------------------------------------------
+# Wire-shape assertions (axonflow-enterprise#1989).
+#
+# The platform now returns top-level success:true on all 4 non-paywall
+# V1 Pro tool responses, plus submitted:true on request_approval and
+# created:true on create_tenant_policy. Each tool's prompt above asks
+# the model to print the raw JSON response verbatim, so a literal grep
+# for the JSON field works even though codex CLI itself paraphrases by
+# default. If the model paraphrases anyway, the assertion fails — which
+# is the correct signal: the tool's response shape WAS that, but the
+# model didn't surface it. Either way the test catches drift on the
+# server-side contract.
+# ---------------------------------------------------------------------------
+echo
+echo "================ wire-shape assertions (axonflow-enterprise#1989) ================"
+assert_body_contains() {
+  local label="$1" file="$2" pattern="$3"
+  if grep -qE "$pattern" "$file"; then
+    echo "  $label: '$pattern' present ✓"
+  else
+    fail "$label: missing '$pattern' (axonflow-enterprise#1989 contract)"
+  fi
+}
+assert_body_contains "axonflow_list_pro_features"    "$EVIDENCE/axonflow_list_pro_features.log"    '"success":[[:space:]]*true'
+assert_body_contains "axonflow_request_approval"     "$EVIDENCE/axonflow_request_approval.log"     '"success":[[:space:]]*true'
+assert_body_contains "axonflow_request_approval"     "$EVIDENCE/axonflow_request_approval.log"     '"submitted":[[:space:]]*true'
+assert_body_contains "axonflow_create_tenant_policy" "$EVIDENCE/axonflow_create_tenant_policy.log" '"success":[[:space:]]*true'
+assert_body_contains "axonflow_create_tenant_policy" "$EVIDENCE/axonflow_create_tenant_policy.log" '"created":[[:space:]]*true'
+assert_body_contains "axonflow_get_tenant_id"        "$EVIDENCE/axonflow_get_tenant_id.log"        '"success":[[:space:]]*true'
 
 {
   echo

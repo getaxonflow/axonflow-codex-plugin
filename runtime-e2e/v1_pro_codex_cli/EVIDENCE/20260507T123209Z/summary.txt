@@ -1,6 +1,0 @@
-
-Codex V1 Plugin Pro MCP-tools-invocable runtime proof — 20260507T123209Z
-AGENT_URL=https://try.getaxonflow.com
-MCP_SERVER_NAME=axonflow_v1_pro_e2e
-TENANT=cs_e10b804e-3fb7-43fb-8aec-4a8825c4e17b
-Result: PASS
