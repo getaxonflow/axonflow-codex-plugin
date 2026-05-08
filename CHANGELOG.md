@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`list-recent-decisions` skill** — V1.1 (axonflow-enterprise#1982). Codex agents drive the new `list_recent_decisions` MCP tool to surface "what just got blocked" UX, appeal flows, and decision-history forensics. Tier-throttled per the platform's Free/Pro window+limit; the skill explicitly instructs the LLM to render the V1 upgrade envelope verbatim on cap-hit (locks in `feedback_429_no_upgrade_hint_is_conversion_gap.md`).
+- `runtime-e2e/list-recent-decisions/` — wire-level test asserting (a) MCP server advertises the tool, (b) happy-path returns the decisions shape, (c) cap-hit returns the wrapped V1 upgrade envelope with `upgrade.compare_url` + `upgrade.buy_url` intact.
+- `tests/e2e/runtime-mcp-tools.sh` extended with a 7th scenario covering the over-cap envelope at the wire level.
+
 ## [1.3.0] - 2026-05-07 — V1 Plugin Pro upgrade-prompt envelope + 5 new MCP tools surfaced
 
 Companion plugin release to AxonFlow agent v7.7.0. Surfaces the V1
