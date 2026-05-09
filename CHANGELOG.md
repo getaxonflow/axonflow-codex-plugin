@@ -104,11 +104,11 @@ the agent-side scope-validation header on every governed request via
 
 ### Added
 
-- **V1 paid Pro tier — `X-License-Token` wire-up.** When `AXONFLOW_LICENSE_TOKEN` is set in the environment, or `license_token = "AXON-."` is present in `~/.codex/axonflow.toml`, the plugin forwards the token as the `X-License-Token` HTTP header on every governed request (pre-tool policy check, post-tool audit + scan, and the long-lived MCP session). The agent's plugin-claim middleware validates the token's Ed25519 signature and database row, then enriches the request context with Pro-tier capabilities (longer audit retention, larger payload caps, higher daily quotas). Token absence is the free tier — no header is sent. Tokens that don't carry the canonical `AXON-` prefix are filtered out before the request leaves the plugin so the agent never sees garbage.
+- **V1 paid Pro tier — `X-License-Token` wire-up.** When `AXONFLOW_LICENSE_TOKEN` is set in the environment, or `license_token = "AXON-..."` is present in `~/.codex/axonflow.toml`, the plugin forwards the token as the `X-License-Token` HTTP header on every governed request (pre-tool policy check, post-tool audit + scan, and the long-lived MCP session). The agent's plugin-claim middleware validates the token's Ed25519 signature and database row, then enriches the request context with Pro-tier capabilities (longer audit retention, larger payload caps, higher daily quotas). Token absence is the free tier — no header is sent. Tokens that don't carry the canonical `AXON-` prefix are filtered out before the request leaves the plugin so the agent never sees garbage.
 - **Credential & license-token recovery surface — `scripts/recover.sh`.** Four sub-flows for users who need to manage credentials without leaving Codex:
  - `request` — POSTs `/api/v1/recover` with the user's email so the agent emails a magic link with a one-time token.
  - `verify` — POSTs `/api/v1/recover/verify` with the pasted token, then atomically persists the returned `tenant_id`, `secret`, `endpoint`, and `email` into `~/.codex/axonflow.toml` (mode `0600`, inside a `0700` parent). An existing `license_token` line is preserved so credential recovery never silently downgrades a Pro-tier user to the free tier.
- - `apply-token` — persists a freshly-issued `AXON-.` Pro-tier license token into the same TOML file.
+ - `apply-token` — persists a freshly-issued `AXON-...` Pro-tier license token into the same TOML file.
  - `status` — reports the active endpoint, config file presence, license token presence, and current tier.
  The same script powers two new agent-callable skills (`recover-credentials`, `pro-tier-status`) so Codex can guide a user through the flow when they say "I lost my credentials" or "am I on Pro?". For automation and runtime tests the script also reads `AXONFLOW_RECOVER_EMAIL`, `AXONFLOW_RECOVER_TOKEN`, and `AXONFLOW_LICENSE_TOKEN` from the environment instead of prompting.
 - **Runtime E2E coverage** for both surfaces:
@@ -117,7 +117,7 @@ the agent-side scope-validation header on every governed request via
 
 ### Fixed
 
-- **Upgrade-pointer URL aligned with the canonical pricing page.** `AXONFLOW_UPGRADE_URL` default (the URL surfaced by `scripts/recover.sh status` and the `pro-tier-status` skill to free-tier users, plus embedded in the `tier Free tier (Pro expired. — visit. to renew)` line) is now `https://getaxonflow.com/pricing/`. The previous default `https://getaxonflow.com/pro` returned 404 — that page was referenced in PRDs but never built. The pricing page already resolves and carries the Plugin Pro $9.99 tier card with the Stripe buy button, so plugin status output now points free-tier users at a working URL. Override via `AXONFLOW_UPGRADE_URL` env var if needed. Same fix landed in companion plugin releases (openclaw-plugin v2.2.0, claude-plugin v1.2.0, cursor-plugin v1.2.0).
+- **Upgrade-pointer URL aligned with the canonical pricing page.** `AXONFLOW_UPGRADE_URL` default (the URL surfaced by `scripts/recover.sh status` and the `pro-tier-status` skill to free-tier users, plus embedded in the `tier Free tier (Pro expired ... — visit ... to renew)` line) is now `https://getaxonflow.com/pricing/`. The previous default `https://getaxonflow.com/pro` returned 404 — that page was referenced in PRDs but never built. The pricing page already resolves and carries the Plugin Pro $9.99 tier card with the Stripe buy button, so plugin status output now points free-tier users at a working URL. Override via `AXONFLOW_UPGRADE_URL` env var if needed. Same fix landed in companion plugin releases (openclaw-plugin v2.2.0, claude-plugin v1.2.0, cursor-plugin v1.2.0).
 
 ## [1.1.0] - 2026-05-04 — 4 read-side governance skills
 
@@ -142,7 +142,7 @@ The full set of platform-side security fixes shipped alongside this release — 
 
 **Reliability and bug-fix highlights:**
 - **7-day delivered-heartbeat with stamp-on-success** (this release). Telemetry stamp advances only after the POST returns 2xx, so a transient network failure no longer silences telemetry until the next 7-day window. Concurrent invocations are de-duplicated by an in-flight gate.
-- **Mode-clarity canary log line** on every hook init (this release). Stderr emits `[AxonFlow] Connected to AxonFlow at <URL> (mode=.)` and a PR-blocking CI gate asserts the canary matches the actual outbound destination, guarding against silent endpoint drift.
+- **Mode-clarity canary log line** on every hook init (this release). Stderr emits `[AxonFlow] Connected to AxonFlow at <URL> (mode=...)` and a PR-blocking CI gate asserts the canary matches the actual outbound destination, guarding against silent endpoint drift.
 - **PR-blocking install-to-use smoke against the live community stack** (this release). Catches plugin-side regressions against `try.getaxonflow.com` before they reach a user's terminal.
 
 ### BREAKING
