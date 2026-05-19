@@ -215,7 +215,7 @@ cmd_verify() {
   cat <<EOF
 Credentials recovered and saved to ${AXONFLOW_CODEX_CONFIG:-$HOME/.codex/axonflow.toml}.
 
-  tenant_id   $tenant_id
+  client_id   $tenant_id  (formerly tenant_id)
   endpoint    $endpoint
   email       $email
   expires_at  ${expires_at:-(none)}
@@ -305,18 +305,22 @@ cmd_status() {
   local cfg_present="no"
   [ -f "$file" ] && cfg_present="yes"
 
-  # Tenant ID — needed by the buyer to paste into Stripe Checkout's
+  # Client ID — needed by the buyer to paste into Stripe Checkout's
   # custom field at /pro. Source: try-registration.json (the file
-  # community-saas-bootstrap.sh writes after auto-registration). If the
-  # registration file is missing, the user hasn't bootstrapped yet (or
-  # lost the file — the recover flow can re-mint one).
+  # community-saas-bootstrap.sh writes after auto-registration). The
+  # JSON key is still `tenant_id` on disk (file-format compat with
+  # installed base from v1.4.0 and earlier); we read it under its old
+  # key but surface it under the new `client_id` label per v1.5.0
+  # terminology rebrand (see CHANGELOG v1.5.0). If the registration
+  # file is missing, the user hasn't bootstrapped yet (or lost the
+  # file — the recover flow can re-mint one).
   local tenant_file="${AXONFLOW_CONFIG_DIR:-$HOME/.config/axonflow}/try-registration.json"
-  local tenant_id="(not registered yet — first agent call will auto-register, or run \`scripts/recover.sh request\`)"
+  local client_id="(not registered yet — first agent call will auto-register, or run \`scripts/recover.sh request\`)"
   if [ -f "$tenant_file" ] && command -v jq >/dev/null 2>&1; then
     local found
     found=$(jq -r '.tenant_id // empty' "$tenant_file" 2>/dev/null || true)
     if [ -n "$found" ]; then
-      tenant_id="$found"
+      client_id="$found"
     fi
   fi
 
@@ -376,7 +380,7 @@ cmd_status() {
 AxonFlow Codex plugin — status
 
   endpoint           ${AXONFLOW_ENDPOINT:-${ENDPOINT_DEFAULT}}
-  tenant_id          $tenant_id
+  client_id          $client_id  (formerly tenant_id)
   config file        $file (present=$cfg_present)
   license token      $token_display
   tier               $tier
@@ -396,8 +400,9 @@ EOF
   fi
 
   cat <<EOF
-To upgrade to Pro (\$9.99 one-time), copy your tenant_id above, then visit
-$upgrade_url, paste the tenant_id into the "Your AxonFlow tenant ID" field,
+To upgrade to Pro (\$9.99 one-time), copy your client_id above, then visit
+$upgrade_url, paste the client_id into the Stripe checkout custom field
+(currently labeled "Your AxonFlow tenant ID" on the Stripe form),
 and complete checkout. The license token arrives by email; set it via:
   AXONFLOW_LICENSE_TOKEN=AXON-... codex …
 or persist with:

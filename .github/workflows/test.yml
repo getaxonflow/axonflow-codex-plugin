@@ -51,3 +51,6 @@ jobs:
 
       - name: Run skill-content assertion (pro-tier-status prefers local)
         run: bash tests/test-skill-status-prefers-local.sh
+
+      - name: Run status-output terminology assertion (client_id label)
+        run: bash tests/test-status-client-id-label.sh
