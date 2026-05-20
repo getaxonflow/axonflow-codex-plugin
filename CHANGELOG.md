@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-05-20 — Throttle on HTTP 401 to prevent auth-storm retry loops
+
+### Fixed
+
+- **HTTP 401 from the AxonFlow agent no longer triggers a tight retry loop.** The hook scripts' envelope handler previously only detected HTTP 429 (daily-quota) and HTTP 403 (graduated / Pro-only) — a 401 fell through to the JSON-RPC parser, exited 0 (fail-open), and the next tool call immediately re-fired the same 401. Production telemetry showed 716 × 401 in 24h against `/api/v1/audit/tool-call` from a single source IP. New helper `axonflow_handle_auth_failure` in `scripts/upgrade-prompt.sh` stamps a 5-minute throttle on any HTTP 401 with `limit_type=auth_failure`, wired into both `scripts/pre-tool-check.sh` and `scripts/post-tool-audit.sh` immediately after the envelope-handler check. Subsequent hook fires short-circuit on the throttle-until file until the deadline passes, breaking the loop. On the first 401 of each UTC day the user sees a stderr nudge naming the failure and pointing to `https://getaxonflow.com/dashboard` for credential refresh. Closes [axonflow-enterprise#2275](https://github.com/getaxonflow/axonflow-enterprise/issues/2275).
+
 ## [1.5.0] - 2026-05-19 — Terminology: `tenant_id` → `client_id` in user-facing output
 
 ### Changed

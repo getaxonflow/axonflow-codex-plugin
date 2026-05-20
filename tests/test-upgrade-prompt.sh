@@ -435,6 +435,133 @@ test_no_stdout_bytes() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 9: HTTP 401 auth-failure handling — stamps a 5-minute throttle so the
+# next hook fire short-circuits locally, emits a credential-refresh nudge,
+# and writes nothing to stdout. Closes axonflow-enterprise#2275 (716 × 401
+# in 24h from one source IP — a tight retry loop with no back-off).
+# ---------------------------------------------------------------------------
+test_401_auth_failure_stamps_throttle() {
+  local cache; cache=$(mk_tmp_cache)
+  trap "rm -rf '$cache'" EXIT
+  export XDG_CACHE_HOME="$cache"
+
+  local body headers stderr_out stdout_out
+  body=$(mktemp); echo '{"error":"unauthorized"}' >"$body"
+  headers=$(mktemp); echo "" >"$headers"
+  stderr_out=$(mktemp)
+  stdout_out=$(mktemp)
+
+  # shellcheck disable=SC1090
+  . "$HELPER"
+
+  local before; before=$(date -u +%s)
+  axonflow_handle_auth_failure "401" "$body" "$headers" >"$stdout_out" 2>"$stderr_out"
+  local rc=$?
+
+  assert_eq "rc == 0 (401 detected)" "0" "$rc"
+  assert_eq "stdout is empty" "0" "$(wc -c <"$stdout_out" | tr -d ' ')"
+  assert_contains "stderr names HTTP 401 + pause window" "$(cat "$stderr_out")" \
+    "Authentication failed (HTTP 401) against the AxonFlow agent. Tool governance is paused for 5 minutes."
+  assert_contains "stderr points to dashboard for credential refresh" "$(cat "$stderr_out")" \
+    "https://getaxonflow.com/dashboard"
+
+  # Throttle file stamped with auth_failure limit type + deadline ~ now+300.
+  local tf="$cache/axonflow/throttle-until"
+  assert_eq "throttle file exists" "yes" "$([ -f "$tf" ] && echo yes || echo no)"
+  if [ -f "$tf" ]; then
+    local epoch limit_type
+    epoch=$(awk 'NR==1 {print $1}' "$tf")
+    limit_type=$(awk 'NR==1 {print $2}' "$tf")
+    assert_eq "limit_type == auth_failure" "auth_failure" "$limit_type"
+    # Deadline must be within [before+295, before+305] to allow for clock
+    # ticks during the call without admitting drift outside the spec.
+    local lower=$((before + 295))
+    local upper=$((before + 305))
+    if [ -n "$epoch" ] && [ "$epoch" -ge "$lower" ] && [ "$epoch" -le "$upper" ]; then
+      assert_eq "deadline ~ now+300s (5min cooldown)" "yes" "yes"
+    else
+      assert_eq "deadline ~ now+300s (5min cooldown)" "yes" \
+        "no (epoch=$epoch lower=$lower upper=$upper)"
+    fi
+  fi
+
+  # axonflow_throttle_active observes the stamp.
+  axonflow_throttle_active
+  assert_eq "axonflow_throttle_active picks up the 401 stamp" "0" "$?"
+
+  rm -f "$body" "$headers" "$stderr_out" "$stdout_out"
+}
+
+# ---------------------------------------------------------------------------
+# Test 10: non-401 status codes do NOT trigger axonflow_handle_auth_failure.
+# Confirms the function is scoped to the exact code, not any 4xx. This is
+# the boundary that keeps the envelope handler in charge of 403 / 429.
+# ---------------------------------------------------------------------------
+test_non_401_auth_failure_ignored() {
+  local cache; cache=$(mk_tmp_cache)
+  trap "rm -rf '$cache'" EXIT
+  export XDG_CACHE_HOME="$cache"
+
+  local body headers
+  body=$(mktemp); echo '{"error":"unauthorized"}' >"$body"
+  headers=$(mktemp); echo "" >"$headers"
+
+  # shellcheck disable=SC1090
+  . "$HELPER"
+
+  axonflow_handle_auth_failure "200" "$body" "$headers" 2>/dev/null
+  assert_eq "rc != 0 for HTTP 200" "1" "$?"
+
+  axonflow_handle_auth_failure "403" "$body" "$headers" 2>/dev/null
+  assert_eq "rc != 0 for HTTP 403 (envelope handler owns this)" "1" "$?"
+
+  axonflow_handle_auth_failure "429" "$body" "$headers" 2>/dev/null
+  assert_eq "rc != 0 for HTTP 429 (envelope handler owns this)" "1" "$?"
+
+  axonflow_handle_auth_failure "500" "$body" "$headers" 2>/dev/null
+  assert_eq "rc != 0 for HTTP 500" "1" "$?"
+
+  axonflow_handle_auth_failure "" "$body" "$headers" 2>/dev/null
+  assert_eq "rc != 0 for empty http_code" "1" "$?"
+
+  # Throttle file MUST NOT be stamped on any non-401 path.
+  local tf="$cache/axonflow/throttle-until"
+  assert_eq "throttle file NOT stamped on non-401 paths" "no" \
+    "$([ -f "$tf" ] && echo yes || echo no)"
+
+  rm -f "$body" "$headers"
+}
+
+# ---------------------------------------------------------------------------
+# Test 11: auth-failure prompt is once-per-UTC-day (independent of the
+# tier-limit prompt stamp).
+# ---------------------------------------------------------------------------
+test_401_once_per_day_stamp() {
+  local cache; cache=$(mk_tmp_cache)
+  trap "rm -rf '$cache'" EXIT
+  export XDG_CACHE_HOME="$cache"
+
+  local body headers stderr1 stderr2
+  body=$(mktemp); echo '{"error":"unauthorized"}' >"$body"
+  headers=$(mktemp); echo "" >"$headers"
+  stderr1=$(mktemp)
+  stderr2=$(mktemp)
+
+  # shellcheck disable=SC1090
+  . "$HELPER"
+
+  axonflow_handle_auth_failure "401" "$body" "$headers" 2>"$stderr1"
+  axonflow_handle_auth_failure "401" "$body" "$headers" 2>"$stderr2"
+
+  assert_contains "first 401 prints credential-refresh nudge" "$(cat "$stderr1")" \
+    "Authentication failed (HTTP 401)"
+  assert_not_contains "second 401 suppresses nudge (once-per-day)" \
+    "$(cat "$stderr2")" "Authentication failed (HTTP 401)"
+
+  rm -f "$body" "$headers" "$stderr1" "$stderr2"
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 run_test "T1: 429 daily-quota envelope" test_429_daily_quota
@@ -445,6 +572,9 @@ run_test "T5: non-4xx status ignored" test_non_4xx_status_ignored
 run_test "T6: once-per-day stamp suppresses second wording" test_once_per_day_stamp
 run_test "T7: axonflow_throttle_active state machine" test_throttle_active_states
 run_test "T8: no stdout bytes" test_no_stdout_bytes
+run_test "T9: 401 auth-failure stamps 5min throttle + dashboard nudge" test_401_auth_failure_stamps_throttle
+run_test "T10: non-401 status codes ignored by auth-failure helper" test_non_401_auth_failure_ignored
+run_test "T11: 401 nudge is once-per-UTC-day" test_401_once_per_day_stamp
 
 echo
 echo "==============================="
