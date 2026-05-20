@@ -216,6 +216,14 @@ if axonflow_handle_envelope_response "$HTTP_CODE" "$PRECHECK_BODY" "$PRECHECK_HE
   exit 0
 fi
 
+# axonflow-enterprise#2275: stamp a 5-minute throttle on HTTP 401 so a
+# tight retry loop can't fire 716 × 401 in 24h (the production incident
+# that motivated this). Caller falls open so the user's tool isn't held
+# up while they refresh credentials.
+if axonflow_handle_auth_failure "$HTTP_CODE" "$PRECHECK_BODY" "$PRECHECK_HEADERS"; then
+  exit 0
+fi
+
 RESPONSE=$(cat "$PRECHECK_BODY")
 
 # Empty body from an otherwise-successful curl should also fail open

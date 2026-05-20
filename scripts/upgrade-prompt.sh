@@ -22,6 +22,7 @@
 # Functions exported to callers:
 #   axonflow_throttle_active            — exit 0 if throttle deadline still in future
 #   axonflow_handle_envelope_response   — args: <http_code> <body_file> <headers_file>
+#   axonflow_handle_auth_failure        — args: <http_code> <body_file> <headers_file>
 
 # Guard against multi-source.
 if [ -n "${_AXONFLOW_UPGRADE_PROMPT_LOADED:-}" ]; then
@@ -32,6 +33,12 @@ _AXONFLOW_UPGRADE_PROMPT_LOADED=1
 _AXONFLOW_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/axonflow"
 _AXONFLOW_THROTTLE_FILE="${_AXONFLOW_CACHE_DIR}/throttle-until"
 _AXONFLOW_PROMPT_STAMP="${_AXONFLOW_CACHE_DIR}/upgrade-prompt-last-shown"
+_AXONFLOW_AUTH_PROMPT_STAMP="${_AXONFLOW_CACHE_DIR}/auth-failure-prompt-last-shown"
+# 5-minute back-off after a 401 — long enough to break a tight retry loop
+# (the audit-storm pattern from axonflow-enterprise#2275: 716 × 401 in 24h
+# from a single source IP), short enough that the user can recover quickly
+# after refreshing credentials.
+_AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS=300
 
 _axonflow_ensure_cache_dir() {
   if [ ! -d "$_AXONFLOW_CACHE_DIR" ]; then
@@ -193,6 +200,75 @@ axonflow_handle_envelope_response() {
     {
       echo "[AxonFlow] ${wording}"
       echo "[AxonFlow] Upgrade: ${buy_url}"
+    } >&2
+  fi
+  return 0
+}
+
+# _axonflow_should_show_auth_prompt_today
+#   Returns 0 if today's date stamp is missing on the auth-failure prompt
+#   (so we show the credential-refresh nudge at most once per UTC day).
+#   Kept distinct from the upgrade-prompt stamp so a tier-limit nudge
+#   earlier in the day doesn't suppress a later auth-failure nudge (and
+#   vice versa) — they're independent operator concerns.
+_axonflow_should_show_auth_prompt_today() {
+  _axonflow_ensure_cache_dir
+  local today
+  today=$(date -u +%Y-%m-%d)
+  if [ -f "$_AXONFLOW_AUTH_PROMPT_STAMP" ]; then
+    local last
+    last=$(awk 'NR==1 {print $1}' "$_AXONFLOW_AUTH_PROMPT_STAMP" 2>/dev/null)
+    if [ "$last" = "$today" ]; then
+      return 1
+    fi
+  fi
+  echo "$today" >"$_AXONFLOW_AUTH_PROMPT_STAMP" 2>/dev/null
+  return 0
+}
+
+# axonflow_handle_auth_failure <http_code> <body_file> <headers_file>
+#   Detects HTTP 401 responses from the AxonFlow agent and stamps a
+#   short cooldown so subsequent hook fires short-circuit locally
+#   instead of re-firing the same auth-failing request in a tight loop.
+#
+#   Background — axonflow-enterprise#2275: a single source IP fired 716 ×
+#   401 in 24h against /api/v1/audit/tool-call. The envelope handler above
+#   only fires on 429 / 403, so a 401 falls through to the JSON-RPC parser,
+#   exits 0 (fail-open), and the next tool call immediately re-fires the
+#   same 401. This helper closes that gap.
+#
+#   Returns 0 iff the response is HTTP 401; 1 otherwise. The body_file +
+#   headers_file arguments are accepted for API parity with
+#   axonflow_handle_envelope_response and reserved for future use (e.g.
+#   reading Retry-After or surfacing an agent-supplied wording) — neither
+#   is currently consulted because 401 envelopes from the agent are not
+#   currently structured.
+axonflow_handle_auth_failure() {
+  local http_code="$1"
+  # body_file ($2) + headers_file ($3) accepted for symmetry with
+  # axonflow_handle_envelope_response; intentionally unused today.
+
+  if [ -z "$http_code" ]; then
+    return 1
+  fi
+
+  case "$http_code" in
+    401) ;;
+    *) return 1 ;;
+  esac
+
+  _axonflow_ensure_cache_dir
+  local deadline_epoch
+  deadline_epoch=$(($(date -u +%s) + _AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS))
+  echo "$deadline_epoch auth_failure" >"$_AXONFLOW_THROTTLE_FILE" 2>/dev/null
+
+  # One-time-per-UTC-day stderr prompt so the operator sees the credential
+  # refresh nudge without spam. The throttle file ensures we still back
+  # off the network immediately even when the prompt is suppressed.
+  if _axonflow_should_show_auth_prompt_today; then
+    {
+      echo "[AxonFlow] Authentication failed (HTTP 401) against the AxonFlow agent. Tool governance is paused for 5 minutes."
+      echo "[AxonFlow] Refresh your credentials: https://getaxonflow.com/dashboard"
     } >&2
   fi
   return 0
