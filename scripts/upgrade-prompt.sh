@@ -18,6 +18,7 @@
 # Cache layout (mode 0700):
 #   ~/.cache/axonflow/throttle-until                 — epoch deadline file
 #   ~/.cache/axonflow/upgrade-prompt-last-shown      — date stamp (YYYY-MM-DD)
+#   ~/.cache/axonflow/auth-failure-prompt-last-shown — date stamp (YYYY-MM-DD)
 #
 # Functions exported to callers:
 #   axonflow_throttle_active            — exit 0 if throttle deadline still in future
@@ -37,8 +38,10 @@ _AXONFLOW_AUTH_PROMPT_STAMP="${_AXONFLOW_CACHE_DIR}/auth-failure-prompt-last-sho
 # 5-minute back-off after a 401 — long enough to break a tight retry loop
 # (the audit-storm pattern from axonflow-enterprise#2275: 716 × 401 in 24h
 # from a single source IP), short enough that the user can recover quickly
-# after refreshing credentials.
-_AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS=300
+# after refreshing credentials. Resolved at call time in
+# axonflow_handle_auth_failure so AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS
+# (canonical env-var name shared across the AxonFlow plugin family) can
+# override for testing/tuning without re-sourcing.
 
 _axonflow_ensure_cache_dir() {
   if [ ! -d "$_AXONFLOW_CACHE_DIR" ]; then
@@ -258,8 +261,14 @@ axonflow_handle_auth_failure() {
   esac
 
   _axonflow_ensure_cache_dir
-  local deadline_epoch
-  deadline_epoch=$(($(date -u +%s) + _AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS))
+  local cooldown deadline_epoch
+  cooldown="${AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS:-300}"
+  # Reject non-integer / negative overrides — fall back to 300s so a typo
+  # in the env var doesn't disable the back-off entirely.
+  if ! [[ "$cooldown" =~ ^[0-9]+$ ]] || [ "$cooldown" -lt 1 ]; then
+    cooldown=300
+  fi
+  deadline_epoch=$(($(date -u +%s) + cooldown))
   echo "$deadline_epoch auth_failure" >"$_AXONFLOW_THROTTLE_FILE" 2>/dev/null
 
   # One-time-per-UTC-day stderr prompt so the operator sees the credential

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-05-20 — Cross-plugin alignment: `AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS` env override + Cache-layout doc fix
+
+### Changed
+
+- **401 auth-failure cooldown is now overridable via `AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS`** (canonical name shared with the cursor and claude plugins). Default behavior is unchanged — unset = 300s. Malformed values (non-integer, zero, negative) fall back to 300s so a typo in the env var can't silently disable the back-off. Useful for testing / tuning; production deployments continue to use the default.
+
+### Fixed
+
+- **`scripts/upgrade-prompt.sh` Cache layout header now lists `auth-failure-prompt-last-shown`.** The header block at the top of the file (lines 18-21) previously documented only `throttle-until` + `upgrade-prompt-last-shown`; the third cache file added in v1.5.1 (the once-per-UTC-day stamp for the auth-failure nudge) was created on disk but missing from the doc-header table. Documentation-only fix; no behavior change. (Hostile review of PR #72.)
+
 ## [1.5.1] - 2026-05-20 — Throttle on HTTP 401 to prevent auth-storm retry loops
 
 ### Fixed
