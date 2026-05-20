@@ -562,6 +562,103 @@ test_401_once_per_day_stamp() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 12: AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS env override is honored
+# (canonical name shared with the cursor + claude plugins). The default
+# remains 300s when the env var is unset; this test exercises the override
+# path so the codex plugin stays tunable for testing/tuning.
+#
+# Mutation-test recipe (manual): comment out the
+#   cooldown="${AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS:-300}"
+# line so cooldown falls back to 300 — this test fails at the deadline
+# assertion (deadline lands ~now+300s, not ~now+1s).
+# ---------------------------------------------------------------------------
+test_401_env_override_cooldown() {
+  local cache; cache=$(mk_tmp_cache)
+  trap "rm -rf '$cache'" EXIT
+  export XDG_CACHE_HOME="$cache"
+  export AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS=1
+
+  local body headers stderr_out
+  body=$(mktemp); echo '{"error":"unauthorized"}' >"$body"
+  headers=$(mktemp); echo "" >"$headers"
+  stderr_out=$(mktemp)
+
+  # shellcheck disable=SC1090
+  . "$HELPER"
+
+  local before; before=$(date -u +%s)
+  axonflow_handle_auth_failure "401" "$body" "$headers" 2>"$stderr_out"
+  local rc=$?
+
+  assert_eq "rc == 0 (401 detected with env override)" "0" "$rc"
+
+  local tf="$cache/axonflow/throttle-until"
+  assert_eq "throttle file exists" "yes" "$([ -f "$tf" ] && echo yes || echo no)"
+  if [ -f "$tf" ]; then
+    local epoch
+    epoch=$(awk 'NR==1 {print $1}' "$tf")
+    # Deadline should be ~ before+1 (allow ±2s for clock ticks during the
+    # call). The mutation gate is wide: default-cooldown (300) lands at
+    # before+300, far outside any sane tolerance.
+    local lower=$((before - 1))
+    local upper=$((before + 3))
+    if [ -n "$epoch" ] && [ "$epoch" -ge "$lower" ] && [ "$epoch" -le "$upper" ]; then
+      assert_eq "deadline ~ now+1s (env override honored)" "yes" "yes"
+    else
+      assert_eq "deadline ~ now+1s (env override honored)" "yes" \
+        "no (epoch=$epoch lower=$lower upper=$upper)"
+    fi
+  fi
+
+  unset AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS
+  rm -f "$body" "$headers" "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Test 13: malformed AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS overrides fall
+# back to 300s — a typo in the env var must NOT silently disable the
+# back-off (which is the bug-class that motivated the 401 throttle in the
+# first place). Covers: non-integer, negative, zero.
+# ---------------------------------------------------------------------------
+test_401_env_override_malformed_falls_back_to_default() {
+  local cache; cache=$(mk_tmp_cache)
+  trap "rm -rf '$cache'" EXIT
+  export XDG_CACHE_HOME="$cache"
+
+  # shellcheck disable=SC1090
+  . "$HELPER"
+
+  local body headers
+  body=$(mktemp); echo '{"error":"unauthorized"}' >"$body"
+  headers=$(mktemp); echo "" >"$headers"
+
+  for bad_value in "abc" "-5" "0"; do
+    rm -f "$cache/axonflow/throttle-until"
+    export AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS="$bad_value"
+    local before; before=$(date -u +%s)
+    axonflow_handle_auth_failure "401" "$body" "$headers" 2>/dev/null
+    local tf="$cache/axonflow/throttle-until"
+    if [ -f "$tf" ]; then
+      local epoch
+      epoch=$(awk 'NR==1 {print $1}' "$tf")
+      local lower=$((before + 295))
+      local upper=$((before + 305))
+      if [ -n "$epoch" ] && [ "$epoch" -ge "$lower" ] && [ "$epoch" -le "$upper" ]; then
+        assert_eq "malformed='$bad_value' falls back to 300s" "yes" "yes"
+      else
+        assert_eq "malformed='$bad_value' falls back to 300s" "yes" \
+          "no (epoch=$epoch lower=$lower upper=$upper)"
+      fi
+    else
+      assert_eq "throttle stamped for malformed='$bad_value'" "yes" "no"
+    fi
+  done
+
+  unset AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS
+  rm -f "$body" "$headers"
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 run_test "T1: 429 daily-quota envelope" test_429_daily_quota
@@ -575,6 +672,8 @@ run_test "T8: no stdout bytes" test_no_stdout_bytes
 run_test "T9: 401 auth-failure stamps 5min throttle + dashboard nudge" test_401_auth_failure_stamps_throttle
 run_test "T10: non-401 status codes ignored by auth-failure helper" test_non_401_auth_failure_ignored
 run_test "T11: 401 nudge is once-per-UTC-day" test_401_once_per_day_stamp
+run_test "T12: AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS env override honored" test_401_env_override_cooldown
+run_test "T13: malformed cooldown env override falls back to 300s" test_401_env_override_malformed_falls_back_to_default
 
 echo
 echo "==============================="
