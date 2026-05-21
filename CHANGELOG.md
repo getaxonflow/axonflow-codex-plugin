@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-05-20 — Cross-plugin cooldown env override + Cache-layout doc fix + `org_id` in telemetry heartbeat
+
 ### Added
 
 - **`org_id` field in the telemetry heartbeat body.** Brings the Codex
@@ -21,18 +23,6 @@
 
 ### Changed
 
-- **`scripts/telemetry-ping.sh` header comment** softened from "Anonymous
-  telemetry heartbeat" to "Telemetry heartbeat" alongside the `org_id`
-  addition — the operator-supplied `ORG_ID` is not anonymized.
-
-### Tracking
-
-- [#2277](https://github.com/getaxonflow/axonflow-enterprise/issues/2277)
-
-## [1.5.2] - 2026-05-20 — Cross-plugin alignment: `AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS` env override + Cache-layout doc fix
-
-### Changed
-
 - **401 auth-failure cooldown is now overridable via
   `AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS`** (canonical name shared
   with the cursor and claude plugins). Default behavior is unchanged
@@ -40,6 +30,9 @@
   back to 300s so a typo in the env var can't silently disable the
   back-off. Useful for testing and tuning; production deployments
   continue to use the default.
+- **`scripts/telemetry-ping.sh` header comment** softened from "Anonymous
+  telemetry heartbeat" to "Telemetry heartbeat" alongside the `org_id`
+  addition — the operator-supplied `ORG_ID` is not anonymized.
 
 ### Fixed
 
@@ -68,10 +61,6 @@
   breaking the loop. On the first 401 of each UTC day the user sees a
   stderr nudge naming the failure and pointing at
   https://getaxonflow.com/dashboard for credential refresh.
-
-### Tracking
-
-- [#2275](https://github.com/getaxonflow/axonflow-enterprise/issues/2275)
 
 ## [1.5.0] - 2026-05-19 — Terminology: `tenant_id` → `client_id` in user-facing output
 
@@ -107,10 +96,6 @@
   terminology consistently. The "Activate Pro tier" walkthrough notes
   that Stripe Checkout's custom field is still labeled "AxonFlow
   tenant ID" until that form is updated separately.
-
-### Tracking
-
-- [#2230](https://github.com/getaxonflow/axonflow-enterprise/issues/2230)
 
 ## [1.4.0] - 2026-05-09 — Decision History API + policy_version recorded on every decision + telemetry simplification
 
