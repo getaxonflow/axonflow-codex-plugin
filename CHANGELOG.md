@@ -4,44 +4,113 @@
 
 ### Added
 
-- **`org_id` field in the telemetry heartbeat body (v9.1 preflight, [axonflow-enterprise#2277](https://github.com/getaxonflow/axonflow-enterprise/issues/2277)).** Brings the Codex plugin's telemetry up to parity with the platform's `startup_telemetry.go` emitter — every heartbeat now identifies which deployment-organization emitted it. Three sources in precedence order:
+- **`org_id` field in the telemetry heartbeat body.** Brings the Codex
+  plugin's telemetry up to parity with the platform — every heartbeat
+  now identifies which deployment-organization emitted it. Three
+  sources in precedence order:
   1. The `ORG_ID` env var when set.
-  2. The `tenant_id` from `~/.config/axonflow/try-registration.json` (the `cs_<uuid>` Community SaaS tenant identifier).
+  2. The `tenant_id` from `~/.config/axonflow/try-registration.json`
+     (the `cs_<uuid>` Community SaaS tenant identifier).
   3. The `local-dev-org` sentinel.
 
-  Always emitted. Receiver-side already accepts the field with `omitempty`. Locked in by a new assertion in `tests/heartbeat-real-stack/run_real_stack.sh`. Mutation-tested.
+  Always emitted on the wire; older receivers ignore the field cleanly
+  for backward compat. Honors `AXONFLOW_TELEMETRY=off` like every other
+  heartbeat field. See
+  [getaxonflow.com/privacy/](https://getaxonflow.com/privacy/) for the
+  customer-facing commitment that covers this field.
 
 ### Changed
 
-- **`scripts/telemetry-ping.sh` header comment** softened from "Anonymous telemetry heartbeat" to "Telemetry heartbeat" alongside the v9.1 `org_id` addition — the operator-supplied `ORG_ID` is not anonymized.
+- **`scripts/telemetry-ping.sh` header comment** softened from "Anonymous
+  telemetry heartbeat" to "Telemetry heartbeat" alongside the `org_id`
+  addition — the operator-supplied `ORG_ID` is not anonymized.
+
+### Tracking
+
+- [#2277](https://github.com/getaxonflow/axonflow-enterprise/issues/2277)
 
 ## [1.5.2] - 2026-05-20 — Cross-plugin alignment: `AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS` env override + Cache-layout doc fix
 
 ### Changed
 
-- **401 auth-failure cooldown is now overridable via `AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS`** (canonical name shared with the cursor and claude plugins). Default behavior is unchanged — unset = 300s. Malformed values (non-integer, zero, negative) fall back to 300s so a typo in the env var can't silently disable the back-off. Useful for testing / tuning; production deployments continue to use the default.
+- **401 auth-failure cooldown is now overridable via
+  `AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS`** (canonical name shared
+  with the cursor and claude plugins). Default behavior is unchanged
+  — unset = 300s. Malformed values (non-integer, zero, negative) fall
+  back to 300s so a typo in the env var can't silently disable the
+  back-off. Useful for testing and tuning; production deployments
+  continue to use the default.
 
 ### Fixed
 
-- **`scripts/upgrade-prompt.sh` Cache layout header now lists `auth-failure-prompt-last-shown`.** The header block at the top of the file (lines 18-21) previously documented only `throttle-until` + `upgrade-prompt-last-shown`; the third cache file added in v1.5.1 (the once-per-UTC-day stamp for the auth-failure nudge) was created on disk but missing from the doc-header table. Documentation-only fix; no behavior change. (Hostile review of PR #72.)
+- **`scripts/upgrade-prompt.sh` Cache layout header now lists
+  `auth-failure-prompt-last-shown`.** The header block at the top of
+  the file previously documented only `throttle-until` and
+  `upgrade-prompt-last-shown`; the third cache file added in v1.5.1
+  (the once-per-UTC-day stamp for the auth-failure nudge) was created
+  on disk but missing from the doc-header table. Documentation-only
+  fix; no behavior change.
 
 ## [1.5.1] - 2026-05-20 — Throttle on HTTP 401 to prevent auth-storm retry loops
 
 ### Fixed
 
-- **HTTP 401 from the AxonFlow agent no longer triggers a tight retry loop.** The hook scripts' envelope handler previously only detected HTTP 429 (daily-quota) and HTTP 403 (graduated / Pro-only) — a 401 fell through to the JSON-RPC parser, exited 0 (fail-open), and the next tool call immediately re-fired the same 401. Production telemetry showed 716 × 401 in 24h against `/api/v1/audit/tool-call` from a single source IP. New helper `axonflow_handle_auth_failure` in `scripts/upgrade-prompt.sh` stamps a 5-minute throttle on any HTTP 401 with `limit_type=auth_failure`, wired into both `scripts/pre-tool-check.sh` and `scripts/post-tool-audit.sh` immediately after the envelope-handler check. Subsequent hook fires short-circuit on the throttle-until file until the deadline passes, breaking the loop. On the first 401 of each UTC day the user sees a stderr nudge naming the failure and pointing to `https://getaxonflow.com/dashboard` for credential refresh. Closes [axonflow-enterprise#2275](https://github.com/getaxonflow/axonflow-enterprise/issues/2275).
+- **HTTP 401 from the AxonFlow agent no longer triggers a tight retry
+  loop.** The hook scripts' envelope handler previously only detected
+  HTTP 429 (daily-quota) and HTTP 403 (graduated / Pro-only) — a 401
+  fell through to the JSON-RPC parser, exited 0 (fail-open), and the
+  next tool call immediately re-fired the same 401. One customer
+  observed 716 × 401 in 24h against the audit endpoint from a single
+  source IP. A new helper in `scripts/upgrade-prompt.sh` stamps a
+  5-minute throttle on any HTTP 401 with `limit_type=auth_failure`,
+  wired into both pre- and post-tool hooks. Subsequent hook fires
+  short-circuit on the throttle-until file until the deadline passes,
+  breaking the loop. On the first 401 of each UTC day the user sees a
+  stderr nudge naming the failure and pointing at
+  https://getaxonflow.com/dashboard for credential refresh.
+
+### Tracking
+
+- [#2275](https://github.com/getaxonflow/axonflow-enterprise/issues/2275)
 
 ## [1.5.0] - 2026-05-19 — Terminology: `tenant_id` → `client_id` in user-facing output
 
 ### Changed
 
-- **`scripts/recover.sh status` (and `verify`) output: `tenant_id` label is now `client_id`.** Same value, new user-facing term. Aligns Codex plugin output with the rest of AxonFlow's v9 terminology (the `org_id` ↔ `client_id` ↔ deployment-license-identity three-identifier model — see [axonflow-enterprise#2230](https://github.com/getaxonflow/axonflow-enterprise/issues/2230)). For this release, the output carries a parenthetical bridge note (`(formerly tenant_id)`) so existing users connect the old and new terms without surprise. The bridge note will be removed in v1.6.0.
+- **`scripts/recover.sh status` (and `verify`) output: `tenant_id`
+  label is now `client_id`.** Same value, new user-facing term. Aligns
+  Codex plugin output with the rest of AxonFlow's v9 terminology
+  (the `org_id` ↔ `client_id` ↔ deployment-license-identity
+  three-identifier model). For this release, the output carries a
+  parenthetical bridge note (`(formerly tenant_id)`) so existing users
+  connect the old and new terms without surprise. The bridge note
+  will be removed in v1.6.0.
 
-  **Cosmetic only — no config change is required.** The on-disk registration file at `~/.config/axonflow/try-registration.json` continues to use the `tenant_id` JSON key, and `~/.codex/axonflow.toml` continues to use `tenant_id = "..."` (file-format compat with installed base); only the human-readable status output reads `client_id`. Wire-level `X-Axonflow-Client` header is unchanged. The agent-side MCP tool `axonflow_get_tenant_id` keeps its name (callable both as muscle-memory "what's my tenant ID?" and the new "what's my client ID?" — both return the same identifier).
+  **Cosmetic only — no config change is required.** The on-disk
+  registration file at `~/.config/axonflow/try-registration.json`
+  continues to use the `tenant_id` JSON key, and
+  `~/.codex/axonflow.toml` continues to use `tenant_id = "..."`
+  (file-format compat with installed base); only the human-readable
+  status output reads `client_id`. Wire-level `X-Axonflow-Client`
+  header is unchanged. The agent-side MCP tool `axonflow_get_tenant_id`
+  keeps its name (callable both as muscle-memory "what's my tenant ID?"
+  and the new "what's my client ID?" — both return the same
+  identifier).
 
-  **Action required for users who scripted around the old output:** if your tooling greps for `tenant_id` in `scripts/recover.sh status` stdout, update to grep for `client_id` (or use the underlying `~/.config/axonflow/try-registration.json` file which still carries the legacy key).
+  **Action required for users who scripted around the old output:** if
+  your tooling greps for `tenant_id` in `scripts/recover.sh status`
+  stdout, update to grep for `client_id` (or use the underlying
+  `~/.config/axonflow/try-registration.json` file which still carries
+  the legacy key).
 
-- **README install-flow examples** updated to use `client_id` terminology consistently. The "Activate Pro tier" walkthrough notes that Stripe Checkout's custom field is still labeled "AxonFlow tenant ID" until that form is updated separately.
+- **README install-flow examples** updated to use `client_id`
+  terminology consistently. The "Activate Pro tier" walkthrough notes
+  that Stripe Checkout's custom field is still labeled "AxonFlow
+  tenant ID" until that form is updated separately.
+
+### Tracking
+
+- [#2230](https://github.com/getaxonflow/axonflow-enterprise/issues/2230)
 
 ## [1.4.0] - 2026-05-09 — Decision History API + policy_version recorded on every decision + telemetry simplification
 
