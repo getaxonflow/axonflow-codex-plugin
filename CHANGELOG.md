@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## [1.5.2] - 2026-05-20 — Cross-plugin cooldown env override + Cache-layout doc fix + `org_id` in telemetry heartbeat
+## [1.5.2] - 2026-05-22 — Cross-plugin cooldown env override + Cache-layout doc fix + `org_id` in telemetry heartbeat
 
 ### Added
 
