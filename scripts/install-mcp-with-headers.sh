@@ -39,7 +39,10 @@ if ! command -v codex >/dev/null 2>&1; then
   exit 1
 fi
 
-CONFIG="${HOME}/.codex/config.toml"
+# CODEX_HOME is the codex CLI's own config-root override — `codex mcp add`
+# writes wherever it points, so the python patcher below must edit the SAME
+# file or the header tables land in a config codex never reads.
+CONFIG="${CODEX_HOME:-${HOME}/.codex}/config.toml"
 ENDPOINT="${AXONFLOW_ENDPOINT:-http://localhost:8080}"
 PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 

@@ -166,6 +166,16 @@ PROBE_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
   -H "X-User-Token: e2e-garbage-token-probe" \
   -d '{"jsonrpc":"2.0","id":"probe","method":"tools/list"}')
 if [ "$PROBE_CODE" != "401" ]; then
+  # Distinguish a genuine pre-#2929 platform (HTTP 200: header ignored) from
+  # a transport failure mid-run (curl 000 / 5xx: the /health gate passed at
+  # startup but the agent died since) — the latter is a FAILURE, not a skip.
+  if [ "$PROBE_CODE" != "200" ]; then
+    echo "FAIL: capability probe got HTTP $PROBE_CODE (transport/agent failure, not a pre-#2929 platform)"
+    errors=$((errors + 1))
+    echo ""
+    echo "FAILED: $errors error(s)"
+    exit 1
+  fi
   echo "SKIP: platform at $ENDPOINT does not validate X-User-Token yet (probe HTTP $PROBE_CODE; needs enterprise#2929+) — token legs skipped."
   echo ""
   if [ "$errors" -ne 0 ]; then echo "FAILED: $errors error(s)"; exit 1; fi
