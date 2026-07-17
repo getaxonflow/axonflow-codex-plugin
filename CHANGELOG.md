@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-07-17 — per-user authorization token (X-User-Token) on every governed request
+
+> Version note: 1.5.3 was never cut — this release jumps 1.5.2 → 1.6.0
+> (MINOR: additive capability), matching the claude plugin's 1.10.0 port
+> of the same feature.
+
+### Added
+
+- **The plugin now sends the admin-minted per-user token as `X-User-Token` on every governed request** (axonflow-enterprise#2944, epic #2919; port of the claude plugin's #2935). The platform's fleet plane authenticates the *tenant* with the shared Basic credential; the per-user token additionally yields a **validated, non-forgeable `{identity, role}`** for the developer behind the session (`authenticateMCPServerRequest` → `extractPerUserToken` on the platform, shipped in enterprise#2929), which per-user read scoping (enterprise#2922) and audit attribution key on. Covered send surfaces — all four header-assembly paths:
+  - `scripts/pre-tool-check.sh` (hook `check_policy` + the blocked `audit_tool_call` POST),
+  - `scripts/post-tool-audit.sh` (hook `audit_tool_call` + `check_output`),
+  - `scripts/install-mcp-with-headers.sh` → `~/.codex/config.toml` `[mcp_servers.axonflow.env_http_headers]` mapping `"X-User-Token" = "AXONFLOW_USER_TOKEN"` (the LIVE MCP tools/call plane; Codex resolves the env var at session time and omits the header entirely when it is unset — **re-run the script after upgrading** to pick up the new mapping),
+  - `scripts/mcp-auth-headers.sh` (the readable reference impl, kept in sync) and the `.mcp.json` manifest mirror.
+- **Resolution order** (new `scripts/user-token.sh`): `AXONFLOW_USER_TOKEN` env var (managed settings / MDM env block — wins) → `~/.config/axonflow/user-token.json` (`{"token": "<minted token>"}`). The file is the **cross-plugin provisioning artifact** — the same path the claude plugin reads, so fleet tooling writes ONE file per developer machine — and is **0600-guarded**: non-0600 permissions are rejected with a stderr warning, never loaded silently. Tokens are minted by an org admin via `POST /api/v1/admin/organizations/{org_id}/user-tokens` (enterprise#2930). On the MCP plane the env var is the ONLY source (Codex resolves `env_http_headers` itself; the JSON-file fallback applies to the hook surfaces).
+- **Strictly additive and conditional**: when no token is configured, the header is omitted entirely (never empty) and every request is byte-identical to a 1.5.x plugin — the platform keeps its existing least-privilege attribution path.
+- **Wire-safety guard, never logged**: a hook-path candidate token containing whitespace, control bytes, quotes, or backslashes is dropped locally with a diagnostic that never prints the value — the platform fails closed on a presented-but-invalid token, so sending a mangled credential would turn every governed call into an auth denial. (Codex sends the MCP-plane env value raw — remove/fix a malformed `AXONFLOW_USER_TOKEN` to recover from the resulting 401s.)
+- **Fail-closed on auth denial when a per-user token was sent**: with a token configured, an HTTP 401 / JSON-RPC `-32001` from the agent now BLOCKS the tool call (exit 2) with a diagnostic naming the per-user token as a likely cause (expired / revoked / wrong org) — the pre-existing 401 cooldown fall-open (#2275) would otherwise let a garbage token switch governance off for the whole cooldown window. During the cooldown the hook keeps denying locally (no retry storm). Unconfigured 401 behavior is unchanged (cooldown + fall open).
+- Tests: `tests/test-user-token.sh` (resolver unit + reference-impl wire shape), `tests/test-user-token-header-wire.sh` (drives the ACTUAL hooks against a header-capturing agent: present-when-configured on every governed request, absent + byte-identical header set when not, 0644 refusal, fail-closed deny, no value leak), `tests/test-install-mcp-headers.sh` (install script produces valid TOML with the X-User-Token env mapping), and `runtime-e2e/user-token/` (live stack, no mocks: validated attribution on both planes, tampered-token fail-closed, MCP-plane env contract).
+
+### Fixed
+
+- **`.mcp.json` manifest carried a stale `X-Axonflow-Client: codex-plugin/1.1.0`** while the plugin was at 1.5.2 — now `codex-plugin/1.6.0`, and `tests/test-hooks.sh` gained a version-alignment gate (`.mcp.json` client header must equal `codex-plugin/<plugin.json version>`, and `marketplace.json`'s per-plugin `version` must match too) so this class of drift fails CI instead of shipping.
+- **`install-mcp-with-headers.sh` re-runs no longer corrupt `~/.codex/config.toml`.** The cleanup regex required a leading newline on every prior `[mcp_servers.axonflow.*]` block, but the two blocks it writes are adjacent — the first match consumed the second block's leading newline, so the old `env_http_headers` table survived every re-run and the duplicate table made the file invalid TOML. The newline is now optional; re-run idempotency is regression-pinned by `tests/test-install-mcp-headers.sh`.
+
 ## [1.5.2] - 2026-05-22 — Cross-plugin cooldown env override + Cache-layout doc fix + `org_id` in telemetry heartbeat
 
 ### Added

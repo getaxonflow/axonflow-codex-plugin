@@ -69,12 +69,38 @@ LICENSE_TOKEN="${AXONFLOW_LICENSE_TOKEN_RESOLVED:-}"
 . "${SCRIPT_DIR}/client-header.sh"
 CLIENT_HEADER="${AXONFLOW_CLIENT_HEADER}"
 
+# Per-user authorization token (axonflow-enterprise#2944, epic #2919):
+# resolve the admin-minted token (env AXONFLOW_USER_TOKEN wins, else
+# 0600-guarded ~/.config/axonflow/user-token.json) so MCP-session traffic
+# carries X-User-Token and the platform resolves a validated
+# {identity, role} for the developer. Same env-then-file precedence as the
+# hooks. SYNC NOTE: the LIVE MCP-plane path is install-mcp-with-headers.sh's
+# env_http_headers mapping in ~/.codex/config.toml (Codex resolves
+# AXONFLOW_USER_TOKEN itself at session time, env-only, no strip check);
+# this script is the readable reference impl and must stay header-for-header
+# in sync with that mapping. tests/test-user-token.sh pins this impl's
+# behavior.
+# shellcheck disable=SC1091
+. "${SCRIPT_DIR}/user-token.sh"
+resolve_user_token
+USER_TOKEN="${AXONFLOW_USER_TOKEN:-}"
+
+# X-User-Token is safe to hand-quote into printf-assembled JSON:
+# resolve_user_token only exports values that pass the wire-safety check
+# (no quote/backslash/whitespace/control bytes). Empty when unconfigured —
+# the fragment vanishes and the emitted JSON is byte-identical to the
+# pre-token plugin's output.
+UT_FRAG=""
+if [ -n "$USER_TOKEN" ]; then
+  UT_FRAG="\"X-User-Token\": \"$USER_TOKEN\", "
+fi
+
 if [ -n "$AUTH" ] && [ -n "$LICENSE_TOKEN" ]; then
-  printf '{"Authorization": "Basic %s", "X-License-Token": "%s", "X-Axonflow-Client": "%s"}\n' "$AUTH" "$LICENSE_TOKEN" "$CLIENT_HEADER"
+  printf '{"Authorization": "Basic %s", "X-License-Token": "%s", %s"X-Axonflow-Client": "%s"}\n' "$AUTH" "$LICENSE_TOKEN" "$UT_FRAG" "$CLIENT_HEADER"
 elif [ -n "$AUTH" ]; then
-  printf '{"Authorization": "Basic %s", "X-Axonflow-Client": "%s"}\n' "$AUTH" "$CLIENT_HEADER"
+  printf '{"Authorization": "Basic %s", %s"X-Axonflow-Client": "%s"}\n' "$AUTH" "$UT_FRAG" "$CLIENT_HEADER"
 elif [ -n "$LICENSE_TOKEN" ]; then
-  printf '{"X-License-Token": "%s", "X-Axonflow-Client": "%s"}\n' "$LICENSE_TOKEN" "$CLIENT_HEADER"
+  printf '{"X-License-Token": "%s", %s"X-Axonflow-Client": "%s"}\n' "$LICENSE_TOKEN" "$UT_FRAG" "$CLIENT_HEADER"
 else
-  printf '{"X-Axonflow-Client": "%s"}\n' "$CLIENT_HEADER"
+  printf '{%s"X-Axonflow-Client": "%s"}\n' "$UT_FRAG" "$CLIENT_HEADER"
 fi
