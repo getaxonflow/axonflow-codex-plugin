@@ -71,6 +71,18 @@ if [ -n "${AXONFLOW_LICENSE_TOKEN_RESOLVED:-}" ]; then
   AUTH_HEADER+=(-H "X-License-Token: ${AXONFLOW_LICENSE_TOKEN_RESOLVED}")
 fi
 
+# Per-user authorization token (axonflow-enterprise#2944, epic #2919) —
+# mirror pre-tool-check.sh so the audit_tool_call POST AND the check_output
+# scan below (both reuse AUTH_HEADER) carry X-User-Token and the platform
+# resolves a VALIDATED {identity, role} for this developer. Omitted entirely
+# when unconfigured (no empty header); the token value is never logged.
+# shellcheck disable=SC1091
+. "${SCRIPT_DIR}/user-token.sh"
+resolve_user_token
+if [ -n "${AXONFLOW_USER_TOKEN:-}" ]; then
+  AUTH_HEADER+=(-H "X-User-Token: ${AXONFLOW_USER_TOKEN}")
+fi
+
 # Read hook input from stdin
 INPUT=$(cat)
 

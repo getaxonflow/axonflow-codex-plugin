@@ -12,10 +12,25 @@
 # Usage:
 #   ./install-mcp-with-headers.sh
 #
-# Env vars (resolved at MCP-session time, not at install time):
+# Env vars (resolved at MCP-session time, not at install time; Codex OMITS
+# an env_http_headers header entirely when its env var is unset — an
+# unconfigured var never produces an empty header):
 #   AXONFLOW_ENDPOINT       — defaults to http://localhost:8080
 #   AXONFLOW_AUTH           — Basic-auth credential for the agent (required for Pro paths)
 #   AXONFLOW_LICENSE_TOKEN  — Pro-tier license token (optional; Free tier when absent)
+#   AXONFLOW_USER_TOKEN     — admin-minted per-user token (optional; sent as
+#                             X-User-Token so the platform resolves a validated
+#                             {identity, role} for the developer —
+#                             axonflow-enterprise#2944, epic #2919). NOTE: on
+#                             this MCP plane the token MUST come via the env
+#                             var (managed settings / MDM) — Codex resolves
+#                             env_http_headers itself, so the 0600
+#                             ~/.config/axonflow/user-token.json fallback the
+#                             hooks read does NOT apply here, and Codex sends
+#                             the env value RAW (no local wire-safety strip).
+#                             A malformed value makes the platform fail closed
+#                             (401) on every MCP call — remove/fix it to
+#                             recover.
 
 set -uo pipefail
 
@@ -45,8 +60,13 @@ config_path, client_header = sys.argv[1], sys.argv[2]
 path = pathlib.Path(config_path)
 text = path.read_text()
 
-# Drop any prior axonflow http_headers / env_http_headers blocks.
-text = re.sub(r'\n\[mcp_servers\.axonflow\.(http_headers|env_http_headers)\][^\[]*', '', text)
+# Drop any prior axonflow http_headers / env_http_headers blocks. The
+# leading newline must be OPTIONAL: the two blocks are adjacent, so a
+# mandatory \n let the first match consume the second block's leading
+# newline and the env_http_headers block survived every re-run — the
+# duplicate table made config.toml invalid TOML (fixed in 1.6.0;
+# regression-pinned by tests/test-install-mcp-headers.sh).
+text = re.sub(r'\n?\[mcp_servers\.axonflow\.(http_headers|env_http_headers)\][^\[]*', '', text)
 
 # Find the [mcp_servers.axonflow] section and append child blocks.
 # We append two child tables right after the file ends, since toml allows
@@ -58,6 +78,7 @@ addendum = f'''
 [mcp_servers.axonflow.env_http_headers]
 "X-License-Token" = "AXONFLOW_LICENSE_TOKEN"
 "Authorization" = "AXONFLOW_AUTH"
+"X-User-Token" = "AXONFLOW_USER_TOKEN"
 '''
 if not text.endswith('\n'):
     text += '\n'
@@ -71,3 +92,4 @@ echo "AxonFlow MCP server registered. Verify with:"
 echo "  codex mcp get axonflow"
 echo ""
 echo "Pro tier: export AXONFLOW_LICENSE_TOKEN=AXON-... before launching codex."
+echo "Per-user identity (Enterprise): export AXONFLOW_USER_TOKEN=<admin-minted token> before launching codex."

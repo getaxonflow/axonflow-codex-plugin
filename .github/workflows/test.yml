@@ -46,6 +46,15 @@ jobs:
       - name: Run hook regression tests (mock server)
         run: bash tests/test-hooks.sh
 
+      - name: Run per-user token resolver unit test (X-User-Token, #2944)
+        run: bash tests/test-user-token.sh
+
+      - name: Run X-User-Token hook-wire test (#2944)
+        run: bash tests/test-user-token-header-wire.sh
+
+      - name: Run install-mcp-with-headers config.toml mapping test (#2944)
+        run: bash tests/test-install-mcp-headers.sh
+
       - name: Run upgrade-prompt envelope-handler unit tests
         run: bash tests/test-upgrade-prompt.sh
 

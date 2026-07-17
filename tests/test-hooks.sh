@@ -730,6 +730,26 @@ echo "--- Static: marketplace.json version matches plugin.json ---"
 PLUGIN_VERSION=$(jq -r '.version' "$PLUGIN_DIR/.codex-plugin/plugin.json" 2>/dev/null || echo "")
 assert_eq "Versions match" "$PLUGIN_VERSION" "$MARKETPLACE_VERSION"
 
+echo ""
+echo "--- Static: marketplace.json per-plugin version matches plugin.json ---"
+# marketplace.json carries the version TWICE (metadata.version and
+# plugins[0].version) — gate both so neither can drift.
+MARKETPLACE_PLUGIN_VERSION=$(jq -r '.plugins[0].version' "$PLUGIN_DIR/.codex-plugin/marketplace.json" 2>/dev/null || echo "")
+assert_eq "Per-plugin versions match" "$PLUGIN_VERSION" "$MARKETPLACE_PLUGIN_VERSION"
+
+echo ""
+echo "--- Static: .mcp.json X-Axonflow-Client matches plugin.json version ---"
+# .mcp.json is the manifest mirror of the MCP registration; its hardcoded
+# client header drifted to 1.1.0 once (fixed in 1.6.0) — gate it against
+# plugin.json so that class of drift fails CI instead of shipping.
+MCP_CLIENT_HEADER=$(jq -r '.mcpServers.axonflow.http_headers."X-Axonflow-Client"' "$PLUGIN_DIR/.mcp.json" 2>/dev/null || echo "")
+assert_eq ".mcp.json client header aligned" "codex-plugin/${PLUGIN_VERSION}" "$MCP_CLIENT_HEADER"
+
+echo ""
+echo "--- Static: .mcp.json env_http_headers carries the X-User-Token mapping (#2944) ---"
+MCP_UT_ENV=$(jq -r '.mcpServers.axonflow.env_http_headers."X-User-Token"' "$PLUGIN_DIR/.mcp.json" 2>/dev/null || echo "")
+assert_eq ".mcp.json X-User-Token env mapping" "AXONFLOW_USER_TOKEN" "$MCP_UT_ENV"
+
 # ============================================================
 # Summary
 # ============================================================

@@ -86,6 +86,30 @@ if [ -n "${AXONFLOW_LICENSE_TOKEN_RESOLVED:-}" ]; then
   AUTH_HEADER+=(-H "X-License-Token: ${AXONFLOW_LICENSE_TOKEN_RESOLVED}")
 fi
 
+# Per-user authorization token (axonflow-enterprise#2944, epic #2919).
+# Resolve the admin-minted per-user token from env (AXONFLOW_USER_TOKEN —
+# wins) or ~/.config/axonflow/user-token.json (0600-guarded, cross-plugin
+# provisioning path) and, when present, ship it as X-User-Token so the
+# platform resolves a VALIDATED {identity, role} for this developer instead
+# of the least-privilege attribution-only fallback. Appended to AUTH_HEADER
+# so it ships on every governed curl below (check_policy + the blocked
+# audit_tool_call POST). Omitted entirely when unconfigured (no empty
+# header) — requests are then byte-identical to a pre-token plugin. The
+# token value is never logged.
+# shellcheck disable=SC1091
+. "${SCRIPT_DIR}/user-token.sh"
+resolve_user_token
+if [ -n "${AXONFLOW_USER_TOKEN:-}" ]; then
+  AUTH_HEADER+=(-H "X-User-Token: ${AXONFLOW_USER_TOKEN}")
+fi
+
+# #2944: shared stderr hint used by every auth-failure branch below when a
+# per-user token was sent — the platform fails closed on a presented-but-
+# invalid X-User-Token (expired, revoked, wrong org), and the generic "fix
+# AXONFLOW_AUTH" guidance would send the operator down the wrong path.
+# Names the token's config surfaces, NEVER its value.
+USER_TOKEN_HINT="A per-user token is configured (AXONFLOW_USER_TOKEN / user-token.json) and was sent as X-User-Token — if it is expired, revoked, or minted for a different org, the platform rejects the request; ask your admin to rotate it, or remove it to fall back to shared-credential attribution."
+
 # One-time positive disclosure when first connecting to Community SaaS. Stamp
 # is separate from telemetry so the disclosure fires exactly once per install,
 # independent of the 7-day heartbeat cadence.
@@ -163,7 +187,19 @@ fi
 # envelope, the throttle-until stamp suppresses outbound traffic until the
 # envelope's resets_at deadline. Fall open immediately so the user's tool
 # calls aren't held up while we wait out the cap.
+#
+# #2944 exception — auth_failure throttle with a per-user token configured
+# fails CLOSED: the 401 that stamped the throttle is the platform rejecting
+# the presented X-User-Token (fail-closed contract, enterprise#2929). If we
+# fell open here, setting a garbage AXONFLOW_USER_TOKEN would turn
+# governance OFF for the whole cooldown window — a trivial bypass. Denying
+# locally (no network round-trip) preserves the back-off AND the fail-closed
+# posture. Unconfigured behavior is unchanged (fall open, as always).
 if axonflow_throttle_active; then
+  if [ -n "${AXONFLOW_USER_TOKEN:-}" ] && [ "$(axonflow_throttle_reason)" = "auth_failure" ]; then
+    echo "AxonFlow governance blocked: the AxonFlow agent rejected authentication (HTTP 401) and an auth-failure cooldown is active. ${USER_TOKEN_HINT}" >&2
+    exit 2
+  fi
   exit 0
 fi
 
@@ -220,7 +256,18 @@ fi
 # tight retry loop can't fire 716 × 401 in 24h (the production incident
 # that motivated this). Caller falls open so the user's tool isn't held
 # up while they refresh credentials.
+#
+# #2944 exception — when a per-user token was SENT, the 401 is the platform
+# failing closed on a presented-but-invalid X-User-Token. Fail CLOSED (block
+# the tool call) instead of falling open: a fall-open here would let anyone
+# bypass governance by exporting a garbage token. The throttle stamp above
+# still short-circuits subsequent calls locally (they deny via the
+# auth_failure-throttle guard, no retry storm).
 if axonflow_handle_auth_failure "$HTTP_CODE" "$PRECHECK_BODY" "$PRECHECK_HEADERS"; then
+  if [ -n "${AXONFLOW_USER_TOKEN:-}" ]; then
+    echo "AxonFlow governance blocked: the AxonFlow agent at ${ENDPOINT} rejected authentication (HTTP 401), so this tool call is blocked. ${USER_TOKEN_HINT}" >&2
+    exit 2
+  fi
   exit 0
 fi
 
@@ -252,7 +299,15 @@ if [ -n "$JSONRPC_ERROR" ]; then
   JSONRPC_CODE=$(echo "$RESPONSE" | jq -r '.error.code // 0' 2>/dev/null || echo "0")
   case "$JSONRPC_CODE" in
     -32001|-32601|-32602)
-      echo "AxonFlow governance blocked: ${JSONRPC_ERROR} (code ${JSONRPC_CODE}). Fix AxonFlow configuration to restore tool access." >&2
+      # #2944: on the auth error (-32001), name a configured per-user token
+      # as a likely cause — the platform fails closed on a presented-but-
+      # invalid X-User-Token, and "fix AxonFlow configuration" alone would
+      # send the operator down the wrong path. Never the token value.
+      HINT_SUFFIX=""
+      if [ "$JSONRPC_CODE" = "-32001" ] && [ -n "${AXONFLOW_USER_TOKEN:-}" ]; then
+        HINT_SUFFIX=" ${USER_TOKEN_HINT}"
+      fi
+      echo "AxonFlow governance blocked: ${JSONRPC_ERROR} (code ${JSONRPC_CODE}). Fix AxonFlow configuration to restore tool access.${HINT_SUFFIX}" >&2
       exit 2
       ;;
     *)

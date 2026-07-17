@@ -74,6 +74,18 @@ axonflow_throttle_active() {
   return 1
 }
 
+# axonflow_throttle_reason
+#   Prints the reason recorded alongside the active throttle deadline
+#   ("auth_failure" for a 401 cooldown, the envelope's limit_type for
+#   quota throttles, empty when absent). Callers use this to branch on
+#   WHY governance is paused — e.g. pre-tool-check.sh fails CLOSED on an
+#   auth_failure throttle when a per-user token is configured
+#   (axonflow-enterprise#2944), instead of the default fall-open.
+axonflow_throttle_reason() {
+  [ -f "$_AXONFLOW_THROTTLE_FILE" ] || return 0
+  awk 'NR==1 {print $2}' "$_AXONFLOW_THROTTLE_FILE" 2>/dev/null
+}
+
 # _axonflow_should_show_prompt_today
 #   Returns 0 if today's date stamp is missing (so we should show the
 #   upgrade prompt at most once per UTC day).
@@ -278,6 +290,14 @@ axonflow_handle_auth_failure() {
     {
       echo "[AxonFlow] Authentication failed (HTTP 401) against the AxonFlow agent. Tool governance is paused for 5 minutes."
       echo "[AxonFlow] Refresh your credentials: https://getaxonflow.com/dashboard"
+      # axonflow-enterprise#2944: when a per-user token was sent, name it as
+      # a likely cause — the platform fails closed on a presented-but-invalid
+      # X-User-Token (expired, revoked, wrong org), and the generic
+      # credential-refresh guidance would send the operator down the wrong
+      # path. Never print the token value.
+      if [ -n "${AXONFLOW_USER_TOKEN:-}" ]; then
+        echo "[AxonFlow] A per-user token is configured (AXONFLOW_USER_TOKEN / user-token.json) and was sent as X-User-Token — if it is expired, revoked, or minted for a different org, the platform rejects every governed request; ask your admin to rotate it, or remove it to fall back to shared-credential attribution."
+      fi
     } >&2
   fi
   return 0
