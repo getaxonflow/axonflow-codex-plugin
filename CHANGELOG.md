@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Audit payload now sends `caller_name` instead of `tool_type`
+  to identify the calling plugin.** `tool_type` was being (ab)used to
+  carry the caller's identity (`"codex"`) rather than describing a
+  tool's type. The platform accepts the correctly-named `caller_name`
+  field for this purpose (`tool_type` remains a deprecated legacy
+  fallback). Both `scripts/post-tool-audit.sh` and
+  `scripts/pre-tool-check.sh`'s blocked-attempt audit entry now send
+  `caller_name: "codex"`.
+
 ## [1.6.0] - 2026-07-17 — per-user authorization token (X-User-Token) on every governed request
 
 > Version note: 1.5.3 was never cut — this release jumps 1.5.2 → 1.6.0

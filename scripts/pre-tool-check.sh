@@ -355,7 +355,7 @@ if [ "$ALLOWED" = "false" ]; then
           name: "audit_tool_call",
           arguments: {
             tool_name: $tn,
-            tool_type: "codex",
+            caller_name: "codex",
             input: {statement: $stmt},
             output: {policy_decision: "blocked", block_reason: $reason, policies_evaluated: $policies},
             success: false,
