@@ -40,7 +40,7 @@ cat > "$WORK/bin/codex" <<'SH'
 # adversarially — NOT the child header tables the installer appends; the
 # installer must strip those itself for idempotency); `mcp add <name>
 # --url <url>` appends a fresh base section.
-CONFIG="$HOME/.codex/config.toml"
+CONFIG="${CODEX_HOME:-$HOME/.codex}/config.toml"
 case "$1 $2" in
   "mcp remove")
     NAME="$3"
@@ -73,7 +73,10 @@ chmod +x "$WORK/bin/codex"
 PLUGIN_VERSION="$(jq -r '.version' "$ROOT/.codex-plugin/plugin.json")"
 
 run_installer() {
-  env PATH="$WORK/bin:$PATH" HOME="$WORK/home" \
+  # -u CODEX_HOME: legs 1-3 exercise the $HOME default; a host CODEX_HOME
+  # would redirect both the shim and the patcher elsewhere. Leg 4 sets it
+  # explicitly.
+  env -u CODEX_HOME PATH="$WORK/bin:$PATH" HOME="$WORK/home" \
     AXONFLOW_ENDPOINT="http://agent.test:8080" \
     bash "$ROOT/scripts/install-mcp-with-headers.sh" >/dev/null 2>&1
 }
@@ -118,6 +121,28 @@ fi
 CHECK2="$(CONFIG="$CONFIG" python3 -c 'import os,tomllib; tomllib.load(open(os.environ["CONFIG"],"rb")); print("ok")' 2>&1)" || true
 [ "$CHECK2" = "ok" ] && pass "config.toml still valid TOML after re-run" \
   || fail "config.toml invalid after re-run: $CHECK2"
+
+# 3) CODEX_HOME override: the real codex CLI writes wherever CODEX_HOME
+#    points — the patcher must edit the SAME file, and the $HOME default
+#    must stay untouched (previously the patcher hardcoded ~/.codex and
+#    edited a config codex never reads).
+mkdir -p "$WORK/codex-home"
+rm -f "$WORK/home/.codex/config.toml"
+env PATH="$WORK/bin:$PATH" HOME="$WORK/home" CODEX_HOME="$WORK/codex-home" \
+  AXONFLOW_ENDPOINT="http://agent.test:8080" \
+  bash "$ROOT/scripts/install-mcp-with-headers.sh" >/dev/null 2>&1 \
+  || fail "installer exited non-zero under CODEX_HOME"
+CH_CONFIG="$WORK/codex-home/config.toml"
+CHECK3="$(CONFIG="$CH_CONFIG" python3 -c '
+import os, tomllib
+data = tomllib.load(open(os.environ["CONFIG"], "rb"))
+assert data["mcp_servers"]["axonflow"]["env_http_headers"]["X-User-Token"] == "AXONFLOW_USER_TOKEN"
+print("ok")' 2>&1)" || true
+if [ "$CHECK3" = "ok" ] && [ ! -f "$WORK/home/.codex/config.toml" ]; then
+  pass "CODEX_HOME override: patcher edits \$CODEX_HOME/config.toml and leaves ~/.codex untouched"
+else
+  fail "CODEX_HOME override broken (check=$CHECK3, stray-home-config=$([ -f "$WORK/home/.codex/config.toml" ] && echo yes || echo no))"
+fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

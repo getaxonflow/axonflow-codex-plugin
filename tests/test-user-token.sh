@@ -32,9 +32,12 @@ GOOD_TOKEN='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6ImRldkBleGFtcGxlLmN
 # the resolved AXONFLOW_USER_TOKEN (stdout) so assertions stay hermetic.
 # Stderr passes through to the caller's capture.
 resolve() {
-  local home="$1" envtok="$2"
+  local home="$1" envtok="$2" cfgdir="${3:-}"
   (
     export HOME="$home"
+    # Hermetic: a host AXONFLOW_CONFIG_DIR must not bleed into legs that
+    # exercise the $HOME default; the config-dir leg passes it explicitly.
+    if [ -n "$cfgdir" ]; then export AXONFLOW_CONFIG_DIR="$cfgdir"; else unset AXONFLOW_CONFIG_DIR; fi
     if [ -n "$envtok" ]; then export AXONFLOW_USER_TOKEN="$envtok"; else unset AXONFLOW_USER_TOKEN; fi
     # shellcheck disable=SC1091
     . "$ROOT/scripts/user-token.sh"
@@ -131,8 +134,27 @@ OUT="$(resolve "$WORK/no-home" "${GOOD_TOKEN} " 2>/dev/null)"
 [ -z "$OUT" ] && pass "trailing-space env token dropped (never mangled-and-sent)" \
   || fail "trailing-space env token resolved: $OUT"
 
+# 9) AXONFLOW_CONFIG_DIR parity: the resolver honors the relocated config
+#    dir (matching recover.sh's try-registration read and the claude
+#    plugin's resolver), with the SAME 0600 discipline.
+CFGDIR="$WORK/cfgdir-9"
+mkdir -p "$CFGDIR"
+printf '{"token":"cfgdir.tok.value"}' > "$CFGDIR/user-token.json"
+chmod 600 "$CFGDIR/user-token.json"
+OUT="$(resolve "$WORK/no-home" '' "$CFGDIR" 2>/dev/null)"
+[ "$OUT" = "cfgdir.tok.value" ] && pass "AXONFLOW_CONFIG_DIR override: 0600 token file resolves from the relocated dir" \
+  || fail "AXONFLOW_CONFIG_DIR token file did not resolve: '$OUT'"
+chmod 644 "$CFGDIR/user-token.json"
+OUT="$(resolve "$WORK/no-home" '' "$CFGDIR" 2>/dev/null)"
+[ -z "$OUT" ] && pass "AXONFLOW_CONFIG_DIR override: 0644 token file still refused" \
+  || fail "AXONFLOW_CONFIG_DIR 0644 file resolved: '$OUT'"
+
 echo ""
 echo "== mcp-auth-headers.sh reference impl =="
+
+# Hermetic: the resolver honors AXONFLOW_CONFIG_DIR — scrub a host value so
+# the reference-impl legs below (which only override HOME) stay hermetic.
+unset AXONFLOW_CONFIG_DIR
 
 # Hermetic invocation: AXONFLOW_ENDPOINT+AXONFLOW_AUTH pin self-hosted mode
 # (no Community-SaaS bootstrap network traffic); AXONFLOW_CODEX_CONFIG points

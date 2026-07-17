@@ -411,6 +411,36 @@ test_throttle_active_states() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 7b: axonflow_throttle_reason returns the stamp's reason field
+# (#2944 — pre-tool-check.sh keys its fail-closed-with-token deny on
+# reason == "auth_failure"; a quota reason must NEVER trigger it).
+#   - no stamp → empty
+#   - "epoch auth_failure" stamp → auth_failure
+#   - "epoch daily_quota" stamp → daily_quota
+#   - legacy one-field stamp (epoch only, pre-1.6) → empty (graceful)
+# ---------------------------------------------------------------------------
+test_throttle_reason_field() {
+  local cache; cache=$(mk_tmp_cache)
+  trap "rm -rf '$cache'" EXIT
+  export XDG_CACHE_HOME="$cache"
+
+  # shellcheck disable=SC1090
+  . "$HELPER"
+
+  assert_eq "no stamp → empty reason" "" "$(axonflow_throttle_reason)"
+
+  mkdir -p "$cache/axonflow"
+  echo "9999999999 auth_failure" >"$cache/axonflow/throttle-until"
+  assert_eq "auth_failure stamp → auth_failure" "auth_failure" "$(axonflow_throttle_reason)"
+
+  echo "9999999999 daily_quota" >"$cache/axonflow/throttle-until"
+  assert_eq "quota stamp → daily_quota (never auth_failure)" "daily_quota" "$(axonflow_throttle_reason)"
+
+  echo "9999999999" >"$cache/axonflow/throttle-until"
+  assert_eq "legacy one-field stamp → empty reason (graceful)" "" "$(axonflow_throttle_reason)"
+}
+
+# ---------------------------------------------------------------------------
 # Test 8: helper writes nothing to stdout (stdout is reserved for the
 # hook protocol; any byte breaks the parser).
 # ---------------------------------------------------------------------------
@@ -668,6 +698,7 @@ run_test "T4: legacy 429 no envelope (preserve behaviour)" test_legacy_429_no_en
 run_test "T5: non-4xx status ignored" test_non_4xx_status_ignored
 run_test "T6: once-per-day stamp suppresses second wording" test_once_per_day_stamp
 run_test "T7: axonflow_throttle_active state machine" test_throttle_active_states
+run_test "T7b: axonflow_throttle_reason reads the stamp reason field" test_throttle_reason_field
 run_test "T8: no stdout bytes" test_no_stdout_bytes
 run_test "T9: 401 auth-failure stamps 5min throttle + dashboard nudge" test_401_auth_failure_stamps_throttle
 run_test "T10: non-401 status codes ignored by auth-failure helper" test_non_401_auth_failure_ignored

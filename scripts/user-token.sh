@@ -44,8 +44,11 @@
 #
 # Never exits non-zero. Never blocks the calling hook.
 
-# Config dir and file paths.
-USER_TOKEN_CONFIG_DIR="${HOME}/.config/axonflow"
+# Config dir and file paths. AXONFLOW_CONFIG_DIR is honored for parity with
+# the repo's other config-dir consumer (recover.sh's try-registration.json
+# read) and with the claude plugin's resolver — a fleet that relocates the
+# config dir must find the token on every plugin surface that reads files.
+USER_TOKEN_CONFIG_DIR="${AXONFLOW_CONFIG_DIR:-${HOME}/.config/axonflow}"
 USER_TOKEN_FILE="${USER_TOKEN_CONFIG_DIR}/user-token.json"
 
 # user_token_looks_valid — sanity-gate a candidate token before it goes on
