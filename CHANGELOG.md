@@ -4,14 +4,30 @@
 
 ### Changed
 
-- **Audit payload now sends `caller_name` instead of `tool_type`
-  to identify the calling plugin.** `tool_type` was being (ab)used to
-  carry the caller's identity (`"codex"`) rather than describing a
-  tool's type. The platform accepts the correctly-named `caller_name`
-  field for this purpose (`tool_type` remains a deprecated legacy
-  fallback). Both `scripts/post-tool-audit.sh` and
-  `scripts/pre-tool-check.sh`'s blocked-attempt audit entry now send
-  `caller_name: "codex"`.
+- **Audit payload now sends `caller_name` to identify the calling
+  plugin, dual-sent with the legacy `tool_type` for the deprecation
+  window** (axonflow-enterprise#2912, sub-issue of epic #2905).
+  `tool_type` was being (ab)used to carry the caller's identity
+  (`"codex"`) rather than describing a tool's type. The platform side
+  (axonflow-enterprise#2953) adds the correctly-named `caller_name`
+  field and resolves `caller_name → tool_type → default`, writing only
+  `caller_name` on new rows; `tool_type` remains a deprecated legacy
+  fallback that pre-#2953 platforms still honor. Both send sites —
+  `scripts/post-tool-audit.sh` and `scripts/pre-tool-check.sh`'s
+  blocked-attempt audit entry — now send **both** `caller_name: "codex"`
+  and `tool_type: "codex"`. Dual-send is exact on a #2953+ platform
+  (`caller_name` wins) **and** status-quo on any pre-#2953 platform (the
+  legacy `tool_type` still attributes the row), so the plugin can ship
+  on the marketplace ahead of a customer's platform upgrade without a
+  silent audit-attribution regression — critical here because a
+  pre-#2953 agent drops the unknown `caller_name` and defaults an absent
+  `tool_type` to `"claude_code"`, misattributing every codex row.
+  `tool_type` will be dropped once the platform floor includes #2953.
+  This matches the transition pattern across the claude/cursor/openclaw
+  siblings. The host-CLI shim (`tests/host-cli-shim/run.sh`, CI-gated)
+  now asserts the on-the-wire `audit_tool_call` payload carries both
+  keys, so a silent revert fails CI rather than passing on
+  request-count alone.
 
 ## [1.6.0] - 2026-07-17 — per-user authorization token (X-User-Token) on every governed request
 

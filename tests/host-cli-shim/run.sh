@@ -191,6 +191,21 @@ captured_with_tool() {
   jq -s --arg t "$tool" 'map(select(.tool_name == $t)) | length' "$CAPTURE_FILE"
 }
 
+# Returns params.arguments.<field> from the first captured audit_tool_call
+# request (empty string if none / key absent). Pins the #2912 caller-name
+# dual-send payload on the wire: a silent revert of caller_name/tool_type,
+# or a callerName-style typo, makes this return "" and fails CI — the
+# captured-request COUNT alone (audit_tool_call fired) would still pass.
+captured_audit_arg() {
+  local field="$1"
+  jq -rs --arg f "$field" '
+    map(select(.tool_name == "audit_tool_call"))
+    | (.[0].body // "{}")
+    | (fromjson? // {})
+    | (.params.arguments[$f] // "")
+  ' "$CAPTURE_FILE"
+}
+
 invoke_headers_helper() {
   if [ -z "$HEADERS_HELPER" ]; then
     echo ""
@@ -222,6 +237,20 @@ PRE_REQ_COUNT=$(captured_with_tool "check_policy")
 POST_REQ_COUNT=$(captured_with_tool "audit_tool_call")
 [ "$POST_REQ_COUNT" -ge 1 ] && pass "Free: PostToolUse fired audit_tool_call" \
   || fail "Free: PostToolUse did not call audit_tool_call (got $POST_REQ_COUNT)"
+
+# #2912: pin the caller-identity payload the PostToolUse audit actually put on
+# the wire. Dual-send during the tool_type->caller_name deprecation window:
+# caller_name wins on a #2953+ platform, tool_type is the legacy fallback on
+# pre-#2953 platforms. Both must be present and equal to the client id.
+AUDIT_CALLER_NAME=$(captured_audit_arg "caller_name")
+[ "$AUDIT_CALLER_NAME" = "codex" ] \
+  && pass "Free: audit_tool_call carries caller_name=codex (#2912)" \
+  || fail "Free: audit_tool_call caller_name expected 'codex', got '$AUDIT_CALLER_NAME' (#2912 payload regression)"
+
+AUDIT_TOOL_TYPE=$(captured_audit_arg "tool_type")
+[ "$AUDIT_TOOL_TYPE" = "codex" ] \
+  && pass "Free: audit_tool_call carries legacy tool_type=codex (#2912 dual-send)" \
+  || fail "Free: audit_tool_call tool_type expected 'codex', got '$AUDIT_TOOL_TYPE' (#2912 dual-send regression)"
 
 LIC_COUNT=$(captured_with_license_token)
 [ "$LIC_COUNT" -eq 0 ] && pass "Free: NO captured requests carry X-License-Token" \
