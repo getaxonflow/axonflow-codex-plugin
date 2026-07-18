@@ -1,21 +1,21 @@
 # Changelog
 
-## [Unreleased]
+## [1.7.0] - 2026-07-18 — caller_name audit attribution (dual-send with legacy tool_type)
 
 ### Changed
 
 - **Audit payload now sends `caller_name` to identify the calling
   plugin, dual-sent with the legacy `tool_type` for the deprecation
-  window** (axonflow-enterprise#2912, sub-issue of epic #2905).
+  window** (#82; axonflow-enterprise#2912, sub-issue of epic #2905).
   `tool_type` was being (ab)used to carry the caller's identity
   (`"codex"`) rather than describing a tool's type. The platform side
-  (axonflow-enterprise#2953) adds the correctly-named `caller_name`
+  (axonflow-enterprise#2953, shipped in platform 9.11.0) adds the correctly-named `caller_name`
   field and resolves `caller_name → tool_type → default`, writing only
   `caller_name` on new rows; `tool_type` remains a deprecated legacy
   fallback that pre-#2953 platforms still honor. Both send sites —
   `scripts/post-tool-audit.sh` and `scripts/pre-tool-check.sh`'s
   blocked-attempt audit entry — now send **both** `caller_name: "codex"`
-  and `tool_type: "codex"`. Dual-send is exact on a #2953+ platform
+  and `tool_type: "codex"`. Dual-send is exact on a 9.11.0+ platform
   (`caller_name` wins) **and** status-quo on any pre-#2953 platform (the
   legacy `tool_type` still attributes the row), so the plugin can ship
   on the marketplace ahead of a customer's platform upgrade without a
