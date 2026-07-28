@@ -34,8 +34,8 @@ case "$PROBE_STATUS" in
     [ -n "$PROBE_ID" ] && curl -s -X DELETE -H "$AXONFLOW_AUTH_HDR" -H "X-Tenant-ID: local-dev-org" -H "X-User-Email: dev@getaxonflow.com" "$AXONFLOW_ENDPOINT/api/v1/overrides/$PROBE_ID" >/dev/null
     ;;
   *)
-    echo "SKIP: pre-flight create_override returned HTTP $PROBE_STATUS"
-    exit 0
+    require_override_preflight "$PROBE_STATUS" "$PROBE_BODY"
+    exit 1
     ;;
 esac
 

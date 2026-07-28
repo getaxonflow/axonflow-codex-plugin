@@ -20,10 +20,7 @@ REASON_TAG="revoke-runtime-e2e-$(date +%s)-$RANDOM"
 echo "--- Seeding override via MCP path (same tenant codex sees) ---"
 
 SEED_ID=$(mcp_seed_override "sys_pii_email" "$REASON_TAG" 300)
-if [ -z "$SEED_ID" ]; then
-  echo "SKIP: pre-flight MCP create_override returned empty id"
-  exit 0
-fi
+require_mcp_override_seed "$SEED_ID" || exit 1
 echo "--- Seeded override id: $SEED_ID ---"
 
 OUTPUT_FILE=$(mktemp -t axonflow-codex-revoke.XXXXXX)
