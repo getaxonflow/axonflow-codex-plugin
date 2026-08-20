@@ -17,8 +17,22 @@ echo "--- Triggering platform block via MCP path (same tenant codex sees) ---"
 
 DECISION_ID=$(mcp_seed_block "$SEED_TAG")
 if [ -z "$DECISION_ID" ]; then
-  echo "SKIP: MCP seed block did not return a decision_id"
-  exit 0
+  # Previously "SKIP:" + exit 0 (#87). That is the wrong outcome twice over:
+  # a governance stack that does NOT block (and record a decision for) an
+  # obvious OR-1=1 SQLi through check_policy is a finding, and a missing
+  # decision_id means explain_decision has nothing to explain. Skipping here
+  # reported success for exactly the conditions this suite exists to detect.
+  echo "FAIL: could not mint a blocked decision to explain"
+  echo "      mcp_seed_block returned no decision_id for tag $SEED_TAG"
+  echo "      endpoint: $AXONFLOW_ENDPOINT"
+  echo ""
+  echo "      Expected the MCP check_policy path to BLOCK the seeded SQLi"
+  echo "      statement and return a decision_id. If the statement was allowed,"
+  echo "      the stack is not enforcing the pattern catalogue; if it was"
+  echo "      blocked without a decision_id, the platform is below the floor"
+  echo "      that returns one (7.1.0+). Either is a finding; neither is a"
+  echo "      reason to exit 0."
+  exit 1
 fi
 echo "--- Minted decision_id: $DECISION_ID ---"
 sleep 2
