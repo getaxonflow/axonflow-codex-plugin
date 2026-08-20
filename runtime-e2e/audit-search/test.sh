@@ -34,8 +34,20 @@ DIRECT_HITS=$(curl -s -X POST \
   "$AXONFLOW_ENDPOINT/api/v1/audit/search" \
   | jq --arg m "$MARKER" '[.entries[] | select((.query // "") | contains($m))] | length' 2>/dev/null)
 if [ "${DIRECT_HITS:-0}" -lt 1 ]; then
-  echo "SKIP: marker did not land in audit log via direct seed"
-  exit 0
+  # Previously "SKIP:" + exit 0 (#87): success reported for precisely the
+  # condition that makes the rest of this suite meaningless. If the seeded
+  # marker never reaches the audit log, the agent-driven search below has
+  # nothing to find, and a green result would say the audit trail works when
+  # it does not.
+  echo "FAIL: the seeded marker never landed in the audit log"
+  echo "      marker:   $MARKER"
+  echo "      endpoint: $AXONFLOW_ENDPOINT"
+  echo ""
+  echo "      The direct POST /api/v1/audit/search returned no entry containing"
+  echo "      it, so the audit write path is broken, the search path is broken,"
+  echo "      or the pattern catalogue no longer matches the seed statement."
+  echo "      Any of those is a finding; none is a reason to exit 0."
+  exit 1
 fi
 
 PROMPT="Call the mcp__${MCP_SERVER_NAME}__search_audit_events tool with limit=50 to fetch recent audit events. Then find any entry whose query field contains the substring '$MARKER' and report it. Output exactly the literal text SMOKE_RESULT: followed by a single-line JSON like SMOKE_RESULT: {\"marker_found\":true,\"audit_id\":\"...\"} if found, or SMOKE_RESULT: {\"marker_found\":false} if not."
