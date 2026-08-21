@@ -102,13 +102,13 @@ A `exec_command` is blocked mid-session because a production pattern matched. Th
 
 ---
 
-## Try AxonFlow on a real plugin rollout
+## Take a governed plugin rollout into production
 
-We're opening limited **Plugin Design Partner** slots.
+Solo developers and self-serve teams can use the free 90-day [Plugin Evaluation License](https://getaxonflow.com/plugins/evaluation-license?utm_source=readme_plugin_codex_eval) to validate hook behavior, policy packs, and override workflows.
 
-30-minute hook lifecycle review, policy pack scoping, override workflow design, and IDE/CLI rollout pattern walkthrough — for solo developers and small teams putting governance on Codex.
+Organizations with a dated production requirement, written controls, an executive sponsor, and a technical owner can use AxonFlow's paid [Production Program](https://getaxonflow.com/design-partner?utm_source=readme_plugin_codex). It takes one scoped workflow into production over 60 or 75 days with Enterprise access, founder-led rollout support, upfront conversion pricing, and a fixed decision date.
 
-[Apply here](https://getaxonflow.com/plugins/design-partner?utm_source=readme_plugin_codex) or email [design-partners@getaxonflow.com](mailto:design-partners@getaxonflow.com). Personal email is fine — solo developers welcome.
+Public Design Partner pricing starts at $2,000; the Confidential Paid Pilot starts at $4,000. Prices are subject to eligibility and a signed agreement.
 
 ### See AxonFlow in Action
 
