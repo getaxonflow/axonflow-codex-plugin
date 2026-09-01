@@ -63,3 +63,12 @@ jobs:
 
       - name: Run status-output terminology assertion (client_id label)
         run: bash tests/test-status-client-id-label.sh
+
+      # #3619. Two steps on purpose: the matrix asserts the behaviour, the gate
+      # asserts the matrix can actually go red. A green matrix alone would not
+      # distinguish "the field works" from "nothing is being read off the wire".
+      - name: "Run license_tier heartbeat matrix (round-trip + fail-open, #3619)"
+        run: bash tests/telemetry-license-tier/run.sh
+
+      - name: "Run license_tier mutation gate (the matrix must be able to fail, #3619)"
+        run: bash tests/telemetry-license-tier/mutation_gate.sh
