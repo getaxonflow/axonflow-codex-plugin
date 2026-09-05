@@ -83,6 +83,20 @@ for BAD in "has spaces" "-leading-hyphen" "$(printf 'a%.0s' {1..129})"; do
   fi
 done
 
+# --- a MULTI-LINE audience is rejected, and grep alone would not do it -------
+# `grep` is LINE-BASED: an audience of "aud\nhas spaces" matches on its FIRST
+# line and passes a `^...$` test that looks airtight, and the document then
+# carries a raw newline inside a JSON string - invalid JSON, which the platform
+# refuses as a malformed handshake on every governed call. Regression-pinned
+# because the equality-against-a-stripped-copy guard is the only thing catching
+# it, and a future simplification would delete exactly that line.
+MULTI=$(unset AXONFLOW_PEP_HANDSHAKE; export AXONFLOW_PEP_AUDIENCE="$(printf 'aud\nhas spaces')"; . "$SCRIPT_PATH" 2>/dev/null; echo "${AXONFLOW_PEP_HANDSHAKE:-}")
+if [ -z "$MULTI" ]; then
+  pass "a multi-line audience builds no handshake (grep alone would have admitted it)"
+else
+  fail "a multi-line audience produced '$MULTI'; the document carries a raw newline and the platform would refuse every governed call"
+fi
+
 # --- the installer writes the header only when configured ------------------
 # Codex omits an env_http_headers header whose variable is unset. The static
 # equivalent here is that the KEY IS NOT WRITTEN AT ALL when no audience is
