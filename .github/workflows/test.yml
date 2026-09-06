@@ -46,6 +46,9 @@ jobs:
       - name: Run hook regression tests (mock server)
         run: bash tests/test-hooks.sh
 
+      - name: Run PEP capability handshake unit tests (ADR-065, enterprise#3763)
+        run: bash tests/test-pep-handshake.sh
+
       - name: Run per-user token resolver unit test (X-User-Token, #2944)
         run: bash tests/test-user-token.sh
 

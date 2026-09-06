@@ -57,9 +57,26 @@ codex mcp add axonflow --url "${ENDPOINT}/api/v1/mcp-server" >/dev/null
 # Step 2: append the http_headers + env_http_headers blocks. Codex's CLI
 # doesn't expose this — we edit the toml directly. Use python tomllib for
 # safe parsing + serialization (Python 3.11+).
-python3 - "$CONFIG" "$CLIENT_HEADER" <<'PY'
+# ADR-065 capability handshake (axonflow-enterprise#3763). Computed here so
+# the value written into config.toml is a real declaration or nothing at all.
+#
+# It is written as a STATIC http_headers entry rather than an
+# env_http_headers reference, because the value is derived from
+# AXONFLOW_PEP_AUDIENCE rather than being the audience itself, and nothing in
+# the operator's shell would compute it for the long-lived MCP process. Codex
+# omits an env_http_headers header whose variable is unset; the equivalent
+# here is that the KEY IS NOT WRITTEN AT ALL when no audience is configured,
+# which is what keeps an unconfigured install byte-identical.
+#
+# Re-run this installer after changing AXONFLOW_PEP_AUDIENCE; the declaration
+# is a property of the deployment, not of the session.
+# shellcheck disable=SC1091
+. "${PLUGIN_DIR}/scripts/pep-handshake.sh"
+
+python3 - "$CONFIG" "$CLIENT_HEADER" "${AXONFLOW_PEP_HANDSHAKE:-}" <<'PY'
 import sys, re, pathlib
 config_path, client_header = sys.argv[1], sys.argv[2]
+pep_handshake = sys.argv[3] if len(sys.argv) > 3 else ""
 path = pathlib.Path(config_path)
 text = path.read_text()
 
@@ -74,10 +91,13 @@ text = re.sub(r'\n?\[mcp_servers\.axonflow\.(http_headers|env_http_headers)\][^\
 # Find the [mcp_servers.axonflow] section and append child blocks.
 # We append two child tables right after the file ends, since toml allows
 # them in any order.
+# ABSENT, not empty. A header PRESENT with an empty value is MALFORMED to the
+# platform and refuses the request; an absent one is today's behaviour.
+pep_line = f'"X-Axonflow-PEP-Handshake" = "{pep_handshake}"\n' if pep_handshake else ""
 addendum = f'''
 [mcp_servers.axonflow.http_headers]
 "X-Axonflow-Client" = "{client_header}"
-
+{pep_line}
 [mcp_servers.axonflow.env_http_headers]
 "X-License-Token" = "AXONFLOW_LICENSE_TOKEN"
 "Authorization" = "AXONFLOW_AUTH"
