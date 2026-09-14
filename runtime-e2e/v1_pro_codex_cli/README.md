@@ -17,7 +17,7 @@ For each tool in the V1 PRD §V1 differentiator table, the test:
    `axonflow` server — restored on `EXIT`).
 2. Patches the same TOML with `[mcp_servers.axonflow_v1_pro_e2e.http_headers]`
    for `X-Axonflow-Client` and `[mcp_servers.axonflow_v1_pro_e2e.env_http_headers]`
-   for `Authorization=AXONFLOW_AUTH` + `X-License-Token=AXONFLOW_LICENSE_TOKEN`.
+   for `Authorization=AXONFLOW_MCP_AUTHORIZATION` + `X-License-Token=AXONFLOW_LICENSE_TOKEN`.
    Per memory `feedback_cursor_codex_mcp_headers_field_empirical_truths.md`
    the env_http_headers field is undocumented in `codex mcp add --help`
    but verified by direct config-file edit + `codex mcp get`.

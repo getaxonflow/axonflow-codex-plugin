@@ -2,7 +2,7 @@
 
 Verifies that Codex's MCP-session HTTP traffic to the AxonFlow agent
 carries `X-Axonflow-Client: codex-plugin/<version>` (always) and
-`X-License-Token: ${AXONFLOW_LICENSE_TOKEN}` / `Authorization: ${AXONFLOW_AUTH}`
+`X-License-Token: ${AXONFLOW_LICENSE_TOKEN}` / `Authorization: ${AXONFLOW_MCP_AUTHORIZATION}`
 (env-resolved at MCP-session time, not at install time).
 
 ## What this asserts
