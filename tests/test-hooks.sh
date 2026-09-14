@@ -192,6 +192,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal server error\"}}')
             return
+        elif 'LIMIT_ENVELOPE_RESULT' in statement:
+            # The Community SaaS Free-tier cap answered as a JSON-RPC RESULT with
+            # isError and no 'allowed' (measured on v11.0.0-rc, proxy.go:163).
+            resp = {'jsonrpc': '2.0', 'id': body.get('id'), 'result': {'content': [{'type': 'text', 'text': json.dumps({'error': 'Daily request limit reached. Resets at midnight UTC.', 'limit_type': 'daily_quota', 'tier': 'Free', 'limit': 25, 'remaining': 0, 'window': 'daily_utc', 'upgrade': {'tier': 'Pro', 'wording': 'W3Y-TEST-WORDING Free tier limit reached', 'buy_url': 'https://example.invalid/pricing'}})}], 'isError': True}}
+        elif 'RESULT_NO_ALLOWED' in statement:
+            # A policy result that carries no boolean 'allowed'.
+            resp = {'jsonrpc': '2.0', 'id': body.get('id'), 'result': {'content': [{'type': 'text', 'text': json.dumps({'decision_id': 'no-decision'})}]}}
+        elif 'HTTP_429_ENVELOPE' in statement:
+            # The cap envelope on HTTP 429, JSON-RPC wrapped, with Retry-After.
+            resp = {'jsonrpc': '2.0', 'id': body.get('id'), 'result': {'content': [{'type': 'text', 'text': json.dumps({'error': 'Daily request limit reached. Resets at midnight UTC.', 'limit_type': 'daily_quota', 'tier': 'Free', 'limit': 25, 'remaining': 0, 'window': 'daily_utc', 'upgrade': {'tier': 'Pro', 'wording': 'W3Y-TEST-WORDING Free tier limit reached', 'buy_url': 'https://example.invalid/pricing'}})}], 'isError': True}}
+            self.send_response(429)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Retry-After', '60')
+            self.end_headers()
+            self.wfile.write(json.dumps(resp).encode())
+            return
         elif 'BLOCKED' in statement:
             # Policy blocks the command
             result_text = json.dumps({'allowed': False, 'block_reason': 'Test policy violation', 'policies_evaluated': 10})
@@ -199,6 +215,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif tool_name == 'audit_tool_call':
             result_text = json.dumps({'recorded': True, 'tool_name': args.get('tool_name', 'test')})
             resp = {'jsonrpc': '2.0', 'id': body.get('id'), 'result': {'content': [{'type': 'text', 'text': result_text}]}}
+        elif tool_name == 'check_output' and 'LIMIT_ENVELOPE_RESULT' in args.get('message', ''):
+            resp = {'jsonrpc': '2.0', 'id': body.get('id'), 'result': {'content': [{'type': 'text', 'text': json.dumps({'error': 'Daily request limit reached. Resets at midnight UTC.', 'limit_type': 'daily_quota', 'tier': 'Free', 'limit': 25, 'remaining': 0, 'window': 'daily_utc', 'upgrade': {'tier': 'Pro', 'wording': 'W3Y-TEST-WORDING Free tier limit reached', 'buy_url': 'https://example.invalid/pricing'}})}], 'isError': True}}
+        elif tool_name == 'check_output' and 'RESULT_NO_ALLOWED' in args.get('message', ''):
+            resp = {'jsonrpc': '2.0', 'id': body.get('id'), 'result': {'content': [{'type': 'text', 'text': json.dumps({'decision_id': 'no-decision'})}]}}
         elif tool_name == 'check_output':
             msg = args.get('message', '')
             if 'BLOCKED_OUTPUT' in msg:
@@ -422,15 +442,84 @@ else
 fi
 
 echo ""
-echo "--- PreToolUse: JSON-RPC unknown error code → exit 0 (fail-open) ---"
-# v0.2.1: default-allow on any unknown error code.
+echo "--- PreToolUse: JSON-RPC unknown error code → exit 2 (fail closed) ---"
+# An unknown code is not a decision: fail closed (ruled 2026-09-14).
+# Parse (-32700) and internal (-32603) errors still fail open, above.
 if [ "${1:-}" = "--live" ]; then
-    echo "  SKIP: matrix trigger only works with mock server"
+    echo "  SKIP: mock-only trigger"
     ((PASS++)) || true
 else
-    OUTPUT=$(echo '{"tool_name":"Bash","tool_input":{"command":"FAIL_OPEN_UNKNOWN test"}}' | "$PRE_HOOK" 2>/dev/null)
+    STDERR_FILE=$(mktemp)
+    set +e
+    echo '{"tool_name":"Bash","tool_input":{"command":"FAIL_OPEN_UNKNOWN test"}}' | "$PRE_HOOK" >/dev/null 2>"$STDERR_FILE"
     EXIT_CODE=$?
-    assert_eq "Exit code is 0 (fail-open on unknown code)" "0" "$EXIT_CODE"
+    set -e
+    assert_eq "Exit code is 2 (fail closed on unknown code)" "2" "$EXIT_CODE"
+    assert_contains "Names the unexpected error" "$(cat "$STDERR_FILE")" "answered an unexpected error"
+    rm -f "$STDERR_FILE"
+fi
+
+# Over the Community SaaS Free-tier cap a tool call is BLOCKED (exit 2), with
+# the upgrade prompt still printed (ruled 2026-09-14): a result without a
+# boolean 'allowed', a result with isError, the cap envelope on HTTP 429, and a
+# quota throttle all block. The 401 auth_failure pause is unchanged.
+for trig in LIMIT_ENVELOPE_RESULT RESULT_NO_ALLOWED HTTP_429_ENVELOPE; do
+    echo ""
+    echo "--- PreToolUse: $trig → exit 2 (block) ---"
+    if [ "${1:-}" = "--live" ]; then
+        echo "  SKIP: mock-only trigger"
+        ((PASS++)) || true
+        continue
+    fi
+    TMP_CAP=$(mktemp -d -t axonflow-cap.XXXXXX)
+    set +e
+    echo "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$trig test\"}}" | \
+        XDG_CACHE_HOME="$TMP_CAP" "$PRE_HOOK" >/dev/null 2>"$TMP_CAP/stderr"
+    EXIT_CODE=$?
+    set -e
+    assert_eq "Exit code is 2 (block) ($trig)" "2" "$EXIT_CODE"
+    assert_contains "Block reason on stderr ($trig)" "$(cat "$TMP_CAP/stderr")" "AxonFlow governance blocked"
+    if [ "$trig" != "RESULT_NO_ALLOWED" ]; then
+        assert_contains "Names the Free-tier limit ($trig)" "$(cat "$TMP_CAP/stderr")" "reached its Free-tier limit"
+        assert_contains "Upgrade prompt still prints ($trig)" "$(cat "$TMP_CAP/stderr")" "W3Y-TEST-WORDING"
+        assert_file_exists "throttle-until stamped ($trig)" "$TMP_CAP/axonflow/throttle-until"
+    fi
+    rm -rf "$TMP_CAP"
+done
+
+echo ""
+echo "--- PreToolUse: quota throttle active → exit 2 without a network call ---"
+if [ "${1:-}" = "--live" ]; then
+    echo "  SKIP: mock-only trigger"
+    ((PASS++)) || true
+else
+    TMP_CAP=$(mktemp -d -t axonflow-capthr.XXXXXX)
+    mkdir -p "$TMP_CAP/axonflow"
+    echo "$(( $(date -u +%s) + 600 )) daily_quota" > "$TMP_CAP/axonflow/throttle-until"
+    set +e
+    echo '{"tool_name":"Bash","tool_input":{"command":"echo hi"}}' | XDG_CACHE_HOME="$TMP_CAP" "$PRE_HOOK" >/dev/null 2>"$TMP_CAP/stderr"
+    EXIT_CODE=$?
+    set -e
+    assert_eq "Exit code is 2 while the quota throttle holds" "2" "$EXIT_CODE"
+    assert_contains "Names the Free-tier limit while the throttle holds" "$(cat "$TMP_CAP/stderr")" "reached its Free-tier limit"
+    rm -rf "$TMP_CAP"
+fi
+
+echo ""
+echo "--- PreToolUse: auth_failure throttle active, no user token → exit 0 (unchanged) ---"
+if [ "${1:-}" = "--live" ]; then
+    echo "  SKIP: mock-only trigger"
+    ((PASS++)) || true
+else
+    TMP_CAP=$(mktemp -d -t axonflow-authhr.XXXXXX)
+    mkdir -p "$TMP_CAP/axonflow"
+    echo "$(( $(date -u +%s) + 600 )) auth_failure" > "$TMP_CAP/axonflow/throttle-until"
+    set +e
+    echo '{"tool_name":"Bash","tool_input":{"command":"echo hi"}}' | env -u AXONFLOW_USER_TOKEN XDG_CACHE_HOME="$TMP_CAP" "$PRE_HOOK" >/dev/null 2>"$TMP_CAP/stderr"
+    EXIT_CODE=$?
+    set -e
+    assert_eq "Exit code is 0 during the 401 pause" "0" "$EXIT_CODE"
+    rm -rf "$TMP_CAP"
 fi
 
 echo ""
@@ -449,6 +538,47 @@ assert_eq "Exit code is 0" "0" "$EXIT_CODE"
 # ============================================================
 # PostToolUse Hook Tests
 # ============================================================
+
+for trig in LIMIT_ENVELOPE_RESULT RESULT_NO_ALLOWED; do
+    echo ""
+    echo "--- PostToolUse: check_output $trig → governance alert ---"
+    if [ "${1:-}" = "--live" ]; then
+        echo "  SKIP: mock-only trigger"
+        ((PASS++)) || true
+        continue
+    fi
+    TMP_CAP=$(mktemp -d -t axonflow-postcap.XXXXXX)
+    set +e
+    OUTPUT=$(echo "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat data\"},\"tool_response\":{\"stdout\":\"$trig output\",\"exitCode\":0}}" | \
+        XDG_CACHE_HOME="$TMP_CAP" "$POST_HOOK" 2>"$TMP_CAP/stderr")
+    EXIT_CODE=$?
+    set -e
+    assert_eq "Exit code is 0 ($trig)" "0" "$EXIT_CODE"
+    assert_contains "Governance alert ($trig)" "$OUTPUT" "GOVERNANCE ALERT"
+    assert_contains "Says the output could not be checked ($trig)" "$OUTPUT" "could not check this tool output"
+    if [ "$trig" = "LIMIT_ENVELOPE_RESULT" ]; then
+        assert_contains "Upgrade prompt still prints" "$(cat "$TMP_CAP/stderr")" "W3Y-TEST-WORDING"
+    fi
+    rm -rf "$TMP_CAP"
+done
+
+echo ""
+echo "--- PostToolUse: quota throttle active → governance alert ---"
+if [ "${1:-}" = "--live" ]; then
+    echo "  SKIP: mock-only trigger"
+    ((PASS++)) || true
+else
+    TMP_CAP=$(mktemp -d -t axonflow-postthr.XXXXXX)
+    mkdir -p "$TMP_CAP/axonflow"
+    echo "$(( $(date -u +%s) + 600 )) daily_quota" > "$TMP_CAP/axonflow/throttle-until"
+    set +e
+    OUTPUT=$(echo '{"tool_name":"Bash","tool_input":{"command":"cat data"},"tool_response":{"stdout":"some output","exitCode":0}}' | XDG_CACHE_HOME="$TMP_CAP" "$POST_HOOK" 2>/dev/null)
+    EXIT_CODE=$?
+    set -e
+    assert_eq "Exit code is 0 while the quota throttle holds" "0" "$EXIT_CODE"
+    assert_contains "Governance alert while the quota throttle holds" "$OUTPUT" "could not check this tool output"
+    rm -rf "$TMP_CAP"
+fi
 
 echo ""
 echo "--- PostToolUse: clean output → silent ---"

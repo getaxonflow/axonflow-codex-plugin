@@ -129,8 +129,9 @@ _axonflow_iso8601_to_epoch() {
 #   Detects the V1 Plugin Pro structured envelope on the response and, when
 #   present:
 #     - Emits upgrade.wording + buy URL to stderr (gated by once-per-day stamp)
-#     - Stamps the throttle-until file so subsequent hooks fall open locally
-#       until the deadline passes
+#     - Stamps the throttle-until file so subsequent hooks answer locally
+#       until the deadline passes (blocking while a hosted Free-tier limit
+#       holds; ruled 2026-09-14)
 #   Returns 0 if an envelope was detected and handled; 1 otherwise.
 axonflow_handle_envelope_response() {
   local http_code="$1"
@@ -301,4 +302,26 @@ axonflow_handle_auth_failure() {
     } >&2
   fi
   return 0
+}
+
+# Over a hosted Free-tier limit a governed tool call is BLOCKED with the limit
+# named and the upgrade prompt shown, not run ungoverned (ruled 2026-09-14;
+# reversible by making the callers exit 0 again).
+AXONFLOW_LIMIT_DENY_REASON="AxonFlow governance blocked: this AxonFlow tenant has reached its Free-tier limit, so tool calls are blocked until the limit resets. Pro removes this cap: https://getaxonflow.com/pricing/"
+AXONFLOW_LIMIT_POST_ALERT="GOVERNANCE ALERT: AxonFlow could not check this tool output (this AxonFlow tenant has reached its Free-tier limit). Do not use or reference the output in your response until it can be checked. Pro removes this cap: https://getaxonflow.com/pricing/"
+
+# axonflow_handle_envelope_text gives an envelope that arrived as a tool
+# RESULT's text (HTTP 200) the same handling as a 429/403 body: the throttle
+# stamp and the once-a-day upgrade prompt. Returns 0 when the text is an
+# envelope, 1 otherwise.
+axonflow_handle_envelope_text() {
+  local text="$1" tmp rc
+  [ -n "$text" ] || return 1
+  echo "$text" | jq -e 'type == "object" and has("limit_type")' >/dev/null 2>&1 || return 1
+  tmp=$(mktemp) || return 1
+  printf '%s' "$text" >"$tmp"
+  axonflow_handle_envelope_response "429" "$tmp" "/dev/null"
+  rc=$?
+  rm -f "$tmp"
+  return $rc
 }
