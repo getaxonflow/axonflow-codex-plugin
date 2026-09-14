@@ -16,7 +16,15 @@
 # an env_http_headers header entirely when its env var is unset — an
 # unconfigured var never produces an empty header):
 #   AXONFLOW_ENDPOINT       — defaults to http://localhost:8080
-#   AXONFLOW_AUTH           — Basic-auth credential for the agent (required for Pro paths)
+#   AXONFLOW_AUTH           — the base64 of client-id:client-secret. The per-call hooks
+#                             add "Basic " to it; it is NOT mapped onto this MCP plane.
+#   AXONFLOW_MCP_AUTHORIZATION — the MCP session's Authorization value, WITH its scheme:
+#                             export AXONFLOW_MCP_AUTHORIZATION="Basic $AXONFLOW_AUTH"
+#                             Codex sends an env_http_headers variable verbatim and adds
+#                             no scheme (openai/codex rmcp-client/src/utils.rs:60 at
+#                             rust-v0.132.0), so the bare AXONFLOW_AUTH would reach the
+#                             platform without one and be refused wherever credentials
+#                             are checked.
 #   AXONFLOW_LICENSE_TOKEN  — Pro-tier license token (optional; Free tier when absent)
 #   AXONFLOW_USER_TOKEN     — admin-minted per-user token (optional; sent as
 #                             X-User-Token so the platform resolves a validated
@@ -100,7 +108,7 @@ addendum = f'''
 {pep_line}
 [mcp_servers.axonflow.env_http_headers]
 "X-License-Token" = "AXONFLOW_LICENSE_TOKEN"
-"Authorization" = "AXONFLOW_AUTH"
+"Authorization" = "AXONFLOW_MCP_AUTHORIZATION"
 "X-User-Token" = "AXONFLOW_USER_TOKEN"
 '''
 if not text.endswith('\n'):
@@ -109,6 +117,14 @@ text += addendum
 path.write_text(text)
 print(f"installed http_headers + env_http_headers for axonflow MCP server (client={client_header})")
 PY
+
+if [ -n "${AXONFLOW_AUTH:-}" ] && [ -z "${AXONFLOW_MCP_AUTHORIZATION:-}" ]; then
+  echo ""
+  echo "AXONFLOW_AUTH is set but AXONFLOW_MCP_AUTHORIZATION is not, so the MCP session will send no Authorization header."
+  echo "Codex sends that variable exactly as set, so it carries the scheme. Before launching codex:"
+  # Single quotes: print the line, never the credential.
+  echo '  export AXONFLOW_MCP_AUTHORIZATION="Basic $AXONFLOW_AUTH"'
+fi
 
 echo ""
 echo "AxonFlow MCP server registered. Verify with:"

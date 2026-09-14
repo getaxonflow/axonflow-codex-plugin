@@ -186,7 +186,7 @@ addendum = f'''
 
 [mcp_servers.{server_name}.env_http_headers]
 "X-License-Token" = "AXONFLOW_LICENSE_TOKEN"
-"Authorization" = "AXONFLOW_AUTH"
+"Authorization" = "AXONFLOW_MCP_AUTHORIZATION"
 '''
 if not text.endswith('\n'):
     text += '\n'
@@ -194,9 +194,13 @@ text += addendum
 path.write_text(text)
 PY
 
-# AXONFLOW_AUTH must include the "Basic " prefix because codex's
-# env_http_headers takes the env value verbatim as the header value.
-export AXONFLOW_AUTH="Basic $(printf '%s:%s' "$TENANT" "$SECRET" | base64 | tr -d '\n')"
+# Codex sends an env_http_headers variable verbatim and adds no scheme
+# (openai/codex codex-rs/rmcp-client/src/utils.rs:60 at rust-v0.132.0), so the
+# MCP session's Authorization comes from AXONFLOW_MCP_AUTHORIZATION, which
+# carries "Basic "; AXONFLOW_AUTH stays the bare base64 the hooks prefix
+# themselves (README Step 3).
+export AXONFLOW_AUTH="$(printf '%s:%s' "$TENANT" "$SECRET" | base64 | tr -d '\n')"
+export AXONFLOW_MCP_AUTHORIZATION="Basic $AXONFLOW_AUTH"
 unset AXONFLOW_LICENSE_TOKEN
 
 echo "Codex MCP server '$MCP_SERVER_NAME' configured against $AGENT_URL"

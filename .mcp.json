@@ -8,7 +8,7 @@
       },
       "env_http_headers": {
         "X-License-Token": "AXONFLOW_LICENSE_TOKEN",
-        "Authorization": "AXONFLOW_AUTH",
+        "Authorization": "AXONFLOW_MCP_AUTHORIZATION",
         "X-User-Token": "AXONFLOW_USER_TOKEN"
       }
     }

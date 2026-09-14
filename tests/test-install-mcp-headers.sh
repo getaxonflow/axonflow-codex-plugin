@@ -4,9 +4,11 @@
 # a fake `codex` shim on PATH and asserts the resulting ~/.codex/config.toml:
 #   1. is valid TOML (python3 tomllib),
 #   2. maps "X-User-Token" → AXONFLOW_USER_TOKEN in env_http_headers
-#      (alongside the pre-existing X-License-Token + Authorization mappings),
+#      (alongside X-License-Token and Authorization → AXONFLOW_MCP_AUTHORIZATION),
 #   3. pins http_headers X-Axonflow-Client to codex-plugin/<plugin.json ver>,
-#   4. is idempotent (re-run leaves exactly one of each block).
+#   4. is idempotent (re-run leaves exactly one of each block),
+#   5. makes Codex send Authorization with the Basic scheme, from config.toml
+#      and from .mcp.json, and prints the export line that needs (legs 4-6).
 #
 # Codex resolves env_http_headers itself at MCP-session time and OMITS a
 # header whose env var is unset — so this mapping is byte-identical for
@@ -96,7 +98,7 @@ srv = data["mcp_servers"]["axonflow"]
 envh = srv["env_http_headers"]
 assert envh["X-User-Token"] == "AXONFLOW_USER_TOKEN", envh
 assert envh["X-License-Token"] == "AXONFLOW_LICENSE_TOKEN", envh
-assert envh["Authorization"] == "AXONFLOW_AUTH", envh
+assert envh["Authorization"] == "AXONFLOW_MCP_AUTHORIZATION", envh
 assert srv["http_headers"]["X-Axonflow-Client"] == os.environ["EXPECTED_CLIENT"], srv["http_headers"]
 assert srv["url"] == "http://agent.test:8080/api/v1/mcp-server", srv["url"]
 print("ok")
@@ -142,6 +144,98 @@ if [ "$CHECK3" = "ok" ] && [ ! -f "$WORK/home/.codex/config.toml" ]; then
   pass "CODEX_HOME override: patcher edits \$CODEX_HOME/config.toml and leaves ~/.codex untouched"
 else
   fail "CODEX_HOME override broken (check=$CHECK3, stray-home-config=$([ -f "$WORK/home/.codex/config.toml" ] && echo yes || echo no))"
+fi
+
+# 4) + 5) The Authorization header Codex actually SENDS carries the Basic
+#    scheme. Codex builds MCP request headers in rmcp-client's
+#    build_default_headers (openai/codex rust-v0.132.0,
+#    codex-rs/rmcp-client/src/utils.rs:60): http_headers values verbatim;
+#    env_http_headers values read verbatim from the named variable, and a
+#    header whose variable is unset or blank is omitted. Nothing expands
+#    ${...}. effective.py applies that rule to a header config and an
+#    environment. The hooks add "Basic " themselves, so AXONFLOW_AUTH stays
+#    bare base64 (README Step 3).
+AUTH_B64="$(printf '%s' 'client-id:client-secret' | base64 | tr -d '\n')"
+cat > "$WORK/effective.py" <<'PY'
+import json, os, sys, tomllib
+source, kind = sys.argv[1], sys.argv[2]
+if kind == "toml":
+    with open(source, "rb") as f:
+        srv = tomllib.load(f)["mcp_servers"]["axonflow"]
+else:
+    with open(source) as f:
+        srv = json.load(f)["mcpServers"]["axonflow"]
+headers = {}
+for name, value in (srv.get("http_headers") or {}).items():
+    headers[name.lower()] = value
+for name, var in (srv.get("env_http_headers") or {}).items():
+    value = os.environ.get(var)
+    if value is not None and value.strip():
+        headers[name.lower()] = value
+print(headers.get("authorization", "<absent>"))
+PY
+effective_auth() {  # <file> <toml|json> [VAR=value ...]: the Authorization Codex would send
+  local file="$1" kind="$2"; shift 2
+  env -i PATH="$PATH" "$@" python3 "$WORK/effective.py" "$file" "$kind"
+}
+shape() {  # describe a header value without printing it
+  case "$1" in
+    "<absent>") echo "no header" ;;
+    "Basic $AUTH_B64") echo "Basic + the base64 of id:secret" ;;
+    "Basic "*) echo "Basic + some other ${#1}-character value" ;;
+    *) echo "a value with no scheme (${#1} characters)" ;;
+  esac
+}
+install_with() {  # [VAR=value ...]: run the installer into a fresh HOME with this environment
+  rm -rf "$WORK/auth-home"; mkdir -p "$WORK/auth-home/.codex"
+  env -u CODEX_HOME -u AXONFLOW_AUTH -u AXONFLOW_MCP_AUTHORIZATION PATH="$WORK/bin:$PATH" HOME="$WORK/auth-home" \
+    AXONFLOW_ENDPOINT="http://agent.test:8080" "$@" \
+    bash "$ROOT/scripts/install-mcp-with-headers.sh" >"$WORK/install.out" 2>&1
+}
+README_ENV=(AXONFLOW_AUTH="$AUTH_B64" AXONFLOW_MCP_AUTHORIZATION="Basic $AUTH_B64")
+AUTH_ONLY_ENV=(AXONFLOW_AUTH="$AUTH_B64")
+AUTH_CONFIG="$WORK/auth-home/.codex/config.toml"
+
+install_with "${README_ENV[@]}" || fail "installer exited non-zero (the README's environment)"
+cp "$WORK/install.out" "$WORK/install-readme.out"
+GOT="$(effective_auth "$AUTH_CONFIG" toml "${README_ENV[@]}")"
+if [ "$GOT" = "Basic $AUTH_B64" ]; then
+  pass "config.toml: with the README's exports, Codex sends Authorization: Basic <base64 of id:secret>"
+else
+  fail "config.toml: with the README's exports, Codex sends $(shape "$GOT")"
+fi
+install_with "${AUTH_ONLY_ENV[@]}" || fail "installer exited non-zero (AXONFLOW_AUTH only)"
+cp "$WORK/install.out" "$WORK/install-auth-only.out"
+GOT="$(effective_auth "$AUTH_CONFIG" toml "${AUTH_ONLY_ENV[@]}")"
+case "$GOT" in
+  "<absent>"|"Basic $AUTH_B64") pass "config.toml: with AXONFLOW_AUTH alone, Codex never sends the credential without its scheme ($(shape "$GOT"))" ;;
+  *) fail "config.toml: with AXONFLOW_AUTH alone, Codex sends $(shape "$GOT")" ;;
+esac
+
+GOT="$(effective_auth "$ROOT/.mcp.json" json "${README_ENV[@]}")"
+if [ "$GOT" = "Basic $AUTH_B64" ]; then
+  pass ".mcp.json: with the README's exports, Codex sends Authorization: Basic <base64 of id:secret>"
+else
+  fail ".mcp.json: with the README's exports, Codex sends $(shape "$GOT")"
+fi
+GOT="$(effective_auth "$ROOT/.mcp.json" json "${AUTH_ONLY_ENV[@]}")"
+case "$GOT" in
+  "<absent>"|"Basic $AUTH_B64") pass ".mcp.json: with AXONFLOW_AUTH alone, Codex never sends the credential without its scheme ($(shape "$GOT"))" ;;
+  *) fail ".mcp.json: with AXONFLOW_AUTH alone, Codex sends $(shape "$GOT")" ;;
+esac
+
+# 6) The installer tells a user with AXONFLOW_AUTH alone how to set the MCP
+#    variable, and prints the line rather than the credential.
+EXPORT_LINE='export AXONFLOW_MCP_AUTHORIZATION="Basic $AXONFLOW_AUTH"'
+if grep -qF "$EXPORT_LINE" "$WORK/install-auth-only.out" && ! grep -qF "$AUTH_B64" "$WORK/install-auth-only.out"; then
+  pass "installer with AXONFLOW_AUTH alone prints the AXONFLOW_MCP_AUTHORIZATION export line, not the credential"
+else
+  fail "installer with AXONFLOW_AUTH alone did not print the export line, or printed the credential"
+fi
+if ! grep -qF "AXONFLOW_MCP_AUTHORIZATION" "$WORK/install-readme.out"; then
+  pass "installer with both variables set prints no export hint"
+else
+  fail "installer printed the export hint although AXONFLOW_MCP_AUTHORIZATION was set"
 fi
 
 echo ""
