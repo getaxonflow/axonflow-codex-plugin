@@ -115,7 +115,7 @@ JQ_FIELD_RE = re.compile(
 # expr group is the jq filter text.
 
 RESULT_TEXT_RE = re.compile(
-    r"""axonflow_result_text\s+["']?\$([A-Z_][A-Z0-9_]*)["']?\s+'(?P<expr>[^']+)'""",
+    r"""(?<![A-Za-z0-9_])axonflow_result_text\s+["']?\$([A-Z_][A-Z0-9_]*)["']?\s+'(?P<expr>[^']+)'""",
 )
 # Matches `axonflow_result_text "$VAR" '...'`: the reader in
 # scripts/lib/failure-posture.sh runs `jq -r` with that filter on $VAR, so a

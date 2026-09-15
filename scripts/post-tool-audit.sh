@@ -365,13 +365,16 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
     SCAN_ERROR=$(axonflow_result_text "$SCAN_RESULT" '.error // empty')
     axonflow_post_unchecked "${SCAN_ERROR:-the AxonFlow agent returned no decision}"
   fi
-  # The redacted output is handed to the model whole: its control characters
-  # go, except newline and tab, and it is not cut.
-  REDACTED=$(axonflow_clean_block "$(printf '%s' "$SCAN_RESULT" | jq -r '.redacted_message // empty' 2>/dev/null)")
+  # The redacted output is handed to the model whole: its ASCII control
+  # characters go, except newline and tab, and it is not cut.
+  # Whether a redaction came is decided on the raw value: one made only of
+  # control characters still raises the alert.
+  REDACTED_RAW=$(printf '%s' "$SCAN_RESULT" | jq -r '.redacted_message // empty' 2>/dev/null)
+  REDACTED=$(axonflow_clean_block "$REDACTED_RAW")
   POLICIES_FOUND=$(axonflow_result_text "$SCAN_RESULT" '.policies_evaluated // 0')
   ALLOWED=$(echo "$SCAN_RESULT" | jq -r 'if .allowed == false then "false" else "true" end' 2>/dev/null || echo "true")
 
-  if [ -n "$REDACTED" ] && [ "$REDACTED" != "null" ]; then
+  if [ -n "$REDACTED_RAW" ] && [ "$REDACTED_RAW" != "null" ]; then
     jq -n \
       --arg redacted "$REDACTED" \
       --arg policies "$POLICIES_FOUND" \

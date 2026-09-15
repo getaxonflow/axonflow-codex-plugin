@@ -44,8 +44,9 @@ axonflow_clean_text() {
 
 # axonflow_clean_block <text>
 #   Text from the network that the model reads as a block (a redacted output):
-#   every control character is dropped except newline and tab, and nothing is
-#   cut, since a shortened redaction would no longer be the redaction.
+#   every ASCII control character is dropped except newline and tab, and
+#   nothing is cut (trailing newlines aside, which command substitution strips),
+#   since a shortened redaction would no longer be the redaction.
 axonflow_clean_block() {
   printf '%s' "$1" | LC_ALL=C tr -d '\000-\010\013-\037\177'
 }
