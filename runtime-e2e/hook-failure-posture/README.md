@@ -20,7 +20,7 @@ A credential the platform rejects as wrong (an Enterprise or Community SaaS stac
 
 ## Method
 
-Codex runs each hook as a subprocess, passes the hook JSON on stdin, and blocks on exit code 2 with the reason on stderr. This leg runs the shipped scripts exactly that way, headless: it does not launch the Codex CLI.
+Codex runs each hook as a subprocess, passes the hook JSON on stdin, and blocks on exit code 2 with the reason on stderr. This leg runs the shipped scripts exactly that way, headless: it does not launch the Codex CLI. The JSON is the shape Codex sends, read from the Codex source (`rust-v0.132.0`): an exec is `tool_name` `Bash` with `tool_input.command`, and PostToolUse's `tool_response` is the output itself, a string.
 
 ## Run
 

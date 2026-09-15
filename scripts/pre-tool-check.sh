@@ -20,6 +20,8 @@
 #   -32700 (or with no numeric code); a 3xx;     request (endpoint, credential or
 #   a 4xx other than 408 without a JSON-RPC      configuration); a 413 names the size
 #   answer
+#   A policy result that decides nothing (no -> BLOCK (exit 2): an answer that decides
+#   boolean "allowed", or flagged isError)       nothing never lets a tool call run
 #   The request for this tool call could not  -> BLOCK (exit 2): what governance would
 #   be built                                     check was never sent
 #   No usable answer: unreachable, timeout,   -> AXONFLOW_FAIL_MODE decides: unset, empty
@@ -34,8 +36,6 @@ if [ "$SCRIPT_DIR" = "${BASH_SOURCE[0]}" ]; then
   SCRIPT_DIR="."
 fi
 SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
-# shellcheck source=./lib/failure-posture.sh
-. "${SCRIPT_DIR}/lib/failure-posture.sh"
 
 # Block the tool call with the reason on stderr and stop (exit 2 is the
 # hook's block).
@@ -43,6 +43,13 @@ axonflow_pre_deny() {
   echo "$1" >&2
   exit 2
 }
+
+# The failure-posture table this hook reads. Without it the hook cannot tell a
+# decision from a refusal, so it blocks and says the install is incomplete.
+# shellcheck source=./lib/failure-posture.sh
+if ! . "${SCRIPT_DIR}/lib/failure-posture.sh" 2>/dev/null; then
+  axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow plugin install is incomplete (scripts/lib/failure-posture.sh is missing), so this tool call is blocked. Reinstall the plugin."
+fi
 
 # A governed check that got no usable answer. AXONFLOW_FAIL_MODE decides:
 # unset, empty or "open" (any case) lets the tool call run UNGOVERNED and says
@@ -425,14 +432,15 @@ fi
 # true even when .allowed is false. Use explicit if/else instead.
 ALLOWED=$(echo "$TOOL_RESULT" | jq -r 'if .allowed == false then "false" else "true" end' 2>/dev/null || echo "true")
 BLOCK_REASON=$(axonflow_clean_text "$(echo "$TOOL_RESULT" | jq -r '.block_reason // empty' 2>/dev/null)")
-POLICIES_EVALUATED=$(echo "$TOOL_RESULT" | jq -r '.policies_evaluated // 0' 2>/dev/null || echo "0")
+POLICIES_EVALUATED=$(axonflow_clean_text "$(echo "$TOOL_RESULT" | jq -r '.policies_evaluated // 0' 2>/dev/null)")
 
 # Plugin Batch 1 (ADR-042 + ADR-043): richer block context surfaced when
 # the platform is v7.1.0+. All fields are optional; absent on older platforms.
-DECISION_ID=$(echo "$TOOL_RESULT" | jq -r '.decision_id // empty' 2>/dev/null || echo "")
-RISK_LEVEL=$(echo "$TOOL_RESULT" | jq -r '.risk_level // empty' 2>/dev/null || echo "")
+# Every field printed below came from the network: its control characters go.
+DECISION_ID=$(axonflow_clean_text "$(echo "$TOOL_RESULT" | jq -r '.decision_id // empty' 2>/dev/null)")
+RISK_LEVEL=$(axonflow_clean_text "$(echo "$TOOL_RESULT" | jq -r '.risk_level // empty' 2>/dev/null)")
 OVERRIDE_AVAILABLE=$(echo "$TOOL_RESULT" | jq -r '.override_available // false' 2>/dev/null || echo "false")
-OVERRIDE_EXISTING_ID=$(echo "$TOOL_RESULT" | jq -r '.override_existing_id // empty' 2>/dev/null || echo "")
+OVERRIDE_EXISTING_ID=$(axonflow_clean_text "$(echo "$TOOL_RESULT" | jq -r '.override_existing_id // empty' 2>/dev/null)")
 
 if [ "$ALLOWED" = "false" ]; then
   # Record the blocked attempt in the audit trail (fire-and-forget)

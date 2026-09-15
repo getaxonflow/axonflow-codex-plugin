@@ -65,8 +65,11 @@ fire() {
   echo "$?" > "$EVIDENCE/$tag.rc"
 }
 
-pre_json() { jq -nc --arg c "$1" '{tool_name: "exec_command", tool_input: {cmd: $c}}'; }
-post_json() { jq -nc --arg o "$1" '{tool_name: "exec_command", tool_input: {cmd: "cat notes.txt"}, tool_response: {stdout: $o, exitCode: 0}}'; }
+# The hook JSON Codex sends (read from the Codex source, rust-v0.132.0): an exec
+# is tool_name "Bash" with tool_input.command, and PostToolUse's tool_response
+# is the output itself, a string.
+pre_json() { jq -nc --arg c "$1" '{hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: $c}}'; }
+post_json() { jq -nc --arg o "$1" '{hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: {command: "cat notes.txt"}, tool_response: $o}'; }
 rc() { cat "$EVIDENCE/$1.rc"; }
 has() { grep -qF "$2" "$EVIDENCE/$1.$3"; }
 
@@ -183,8 +186,8 @@ else
   fi
 
   fire "$PRE_HOOK" pre-401-open "$ENDPOINT" "$(pre_json "echo hook-failure-posture 401 open")" AXONFLOW_AUTH="$AUTH_401" AXONFLOW_FAIL_MODE=open
-  if [ "$(rc pre-401-open)" = 2 ]; then
-    pass "a live 401 under AXONFLOW_FAIL_MODE=open still blocks (exit 2)"
+  if [ "$(rc pre-401-open)" = 2 ] && has pre-401-open "rejected authentication (HTTP 401" stderr; then
+    pass "a live 401 under AXONFLOW_FAIL_MODE=open still blocks (exit 2), as a rejected credential"
   else
     fail "a live 401 under open: exit $(rc pre-401-open), stderr: $(cat "$EVIDENCE/pre-401-open.stderr")"
   fi

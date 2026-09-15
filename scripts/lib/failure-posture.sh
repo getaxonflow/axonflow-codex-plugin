@@ -34,8 +34,9 @@ axonflow_fail_mode_open() {
 # axonflow_clean_text <text>
 #   Text that came from the network, made safe to print and to hand to the
 #   model: line breaks and tabs become spaces, every other control character
-#   (ESC, BEL, CR ...) is dropped, and it is trimmed and capped at 300
-#   characters. Bytes of multi-byte UTF-8 characters are kept.
+#   (ESC, BEL, CR ...) is dropped, and it is trimmed and capped with cut -c 300
+#   (300 characters where cut counts characters, 300 bytes where it counts
+#   bytes, as GNU cut does). Bytes of multi-byte UTF-8 characters are kept.
 axonflow_clean_text() {
   printf '%s' "$1" | LC_ALL=C tr '\n\t' '  ' | LC_ALL=C tr -d '\000-\037\177' \
     | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | cut -c1-300
@@ -52,20 +53,22 @@ axonflow_platform_text() {
 }
 
 # axonflow_is_jsonrpc_answer <body>
-#   Prints "true" when the body is a JSON-RPC answer: an object carrying
-#   "jsonrpc" and either a non-null result or an error object. A null result
-#   or error, or an error that is not an object, is not an answer.
+#   Prints "true" when the body is ONE JSON-RPC answer: a single JSON document,
+#   an object carrying "jsonrpc" and either a non-null result or an error
+#   object. A null result or error, an error that is not an object, and a body
+#   of more than one document are not an answer.
 axonflow_is_jsonrpc_answer() {
   local out
-  out=$(printf '%s' "$1" | jq -r 'if type == "object" and has("jsonrpc") and ((.result != null) or ((.error | type) == "object")) then "true" else "false" end' 2>/dev/null)
+  out=$(printf '%s' "$1" | jq -rs 'if length == 1 and (.[0] | type) == "object" and (.[0] | has("jsonrpc")) and ((.[0].result != null) or ((.[0].error | type) == "object")) then "true" else "false" end' 2>/dev/null)
   if [ "$out" = "true" ]; then echo true; else echo false; fi
 }
 
 # axonflow_jsonrpc_error_code <body>
 #   The code of the body's JSON-RPC error object, "none" when that object has
-#   no numeric code, and empty when the body has no error object.
+#   no numeric code, and empty when the body has no error object or is more
+#   than one JSON document (read the same way as axonflow_is_jsonrpc_answer).
 axonflow_jsonrpc_error_code() {
-  printf '%s' "$1" | jq -r 'if type == "object" and ((.error | type) == "object") then (if (.error.code | type) == "number" then (.error.code | tostring) else "none" end) else empty end' 2>/dev/null | head -1
+  printf '%s' "$1" | jq -rs 'if length == 1 and (.[0] | type) == "object" and ((.[0].error | type) == "object") then (if (.[0].error.code | type) == "number" then (.[0].error.code | tostring) else "none" end) else empty end' 2>/dev/null
 }
 
 # axonflow_status_class <http_code> <is_jsonrpc_answer>

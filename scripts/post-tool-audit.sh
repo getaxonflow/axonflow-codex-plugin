@@ -25,8 +25,6 @@ if [ "$SCRIPT_DIR" = "${BASH_SOURCE[0]}" ]; then
   SCRIPT_DIR="."
 fi
 SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
-# shellcheck source=./lib/failure-posture.sh
-. "${SCRIPT_DIR}/lib/failure-posture.sh"
 
 # Emit a PostToolUse governance alert and stop. Without jq the JSON is written
 # by hand; the message is this script's own text, and double quotes and
@@ -40,12 +38,24 @@ axonflow_post_alert() {
   exit 0
 }
 
+# The output could not be checked: tell the model not to use it, saying why.
+axonflow_post_unchecked() {
+  axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output ($1). Do not use or reference the output in your response until it can be checked."
+}
+
+# The failure-posture table this hook reads. Without it the hook cannot tell a
+# check from a refusal, so the model is told not to use the output.
+# shellcheck source=./lib/failure-posture.sh
+if ! . "${SCRIPT_DIR}/lib/failure-posture.sh" 2>/dev/null; then
+  axonflow_post_unchecked "the AxonFlow plugin install is incomplete: scripts/lib/failure-posture.sh is missing"
+fi
+
 # The output could not be checked because no usable answer arrived.
 # AXONFLOW_FAIL_MODE decides: unset, empty or "open" (any case) passes the
 # output and says so on stderr; any other value tells the model not to use it.
 axonflow_post_ungoverned() {
   if ! axonflow_fail_mode_open; then
-    axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output ($1, and AXONFLOW_FAIL_MODE is not open). Do not use or reference the output in your response until it can be checked."
+    axonflow_post_unchecked "$1, and AXONFLOW_FAIL_MODE is not open"
   fi
   echo "[AxonFlow] GOVERNANCE UNAVAILABLE: $1. This tool output was NOT checked. Set AXONFLOW_FAIL_MODE=closed to withhold unchecked output from the model." >&2
   exit 0
@@ -98,6 +108,7 @@ AUTH_ALERT="GOVERNANCE ALERT: AxonFlow could not check this tool output (the Axo
 # (ruled 2026-09-14) or the 401 cooldown (auth_failure).
 if axonflow_throttle_active; then
   if [ "$(axonflow_throttle_reason)" = "auth_failure" ]; then
+    echo "[AxonFlow] $(axonflow_auth_cooldown_note)" >&2
     axonflow_post_alert "$AUTH_ALERT"
   fi
   axonflow_post_alert "$AXONFLOW_LIMIT_POST_ALERT"
@@ -159,8 +170,12 @@ fi
 
 CONNECTOR_TYPE="codex.${TOOL_NAME}"
 
-# Determine success from tool response
-SUCCESS=$(echo "$TOOL_RESPONSE" | jq 'if .exitCode != null then (.exitCode == 0) elif .success != null then .success else true end' 2>/dev/null || echo "true")
+# Determine success from tool response (an object with exitCode or success;
+# Codex sends an exec's response as a string, which carries neither).
+SUCCESS=$(printf '%s' "$INPUT" | jq '.tool_response | if type == "object" then (if .exitCode != null then (.exitCode == 0) elif .success != null then .success else true end) else true end' 2>/dev/null)
+if [ "$SUCCESS" != "true" ] && [ "$SUCCESS" != "false" ]; then
+  SUCCESS=true
+fi
 
 # 1. Record audit entry (fire-and-forget, background). The record is built from
 # the hook input on stdin, so no field of any size becomes a command-line
@@ -195,7 +210,11 @@ SUCCESS=$(echo "$TOOL_RESPONSE" | jq 'if .exitCode != null then (.exitCode == 0)
 OUTPUT_TEXT=""
 case "$TOOL_NAME" in
   Bash|exec_command|shell)
-    OUTPUT_TEXT=$(echo "$TOOL_RESPONSE" | jq -r '.stdout // .output // empty' 2>/dev/null || echo "")
+    # Codex sends an exec's output as the tool_response STRING itself (its
+    # ExecCommandToolOutput::post_tool_use_response, in the Codex source), not
+    # an object. Reading only .stdout skipped every real Codex output with no
+    # word, even under AXONFLOW_FAIL_MODE=closed. Both shapes are read.
+    OUTPUT_TEXT=$(printf '%s' "$INPUT" | jq -r '.tool_response | if type == "string" then . elif type == "object" then (.stdout // .output // empty) else empty end' 2>/dev/null || echo "")
     # If stdout is empty but command contains a redirect (echo ... > file),
     # scan the command itself — the PII is in the input, not the output.
     if [ -z "$OUTPUT_TEXT" ] || [ "$OUTPUT_TEXT" = "null" ]; then
@@ -242,7 +261,7 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
           }
         }
       }' > "$SCAN_REQUEST" 2>/dev/null || [ ! -s "$SCAN_REQUEST" ]; then
-    axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (the check request could not be built). Do not use or reference the output in your response until it can be checked."
+    axonflow_post_unchecked "the check request could not be built"
   fi
 
   SCAN_HTTP=$(curl -sS --max-time "$REQUEST_TIMEOUT_SECONDS" \
@@ -268,6 +287,7 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
   # tight retry loop can't keep firing the same auth-failing scan request, and
   # the model is told not to use the unchecked output.
   if axonflow_handle_auth_failure "$SCAN_HTTP" "$SCAN_BODY" "$SCAN_HEADERS"; then
+    echo "[AxonFlow] $(axonflow_auth_cooldown_note)" >&2
     axonflow_post_alert "$AUTH_ALERT"
   fi
   SCAN_RESPONSE=$(cat "$SCAN_BODY" 2>/dev/null || echo "")
@@ -281,13 +301,13 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
   case "$(axonflow_status_class "$SCAN_HTTP" "$SCAN_IS_JSONRPC")" in
     answer) ;;
     limit)
-      axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (the AxonFlow agent answered HTTP 429, a request limit${SCAN_SAID}). Do not use or reference the output in your response until it can be checked."
+      axonflow_post_unchecked "the AxonFlow agent answered HTTP 429, a request limit${SCAN_SAID}"
       ;;
     too_large)
-      axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (the AxonFlow agent refused the check as too large, HTTP 413${SCAN_SAID}). Do not use or reference the output in your response until it can be checked."
+      axonflow_post_unchecked "the AxonFlow agent refused the check as too large, HTTP 413${SCAN_SAID}"
       ;;
     refused)
-      axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (the AxonFlow agent refused the request, HTTP ${SCAN_HTTP}${SCAN_SAID}). Do not use or reference the output in your response until it can be checked."
+      axonflow_post_unchecked "the AxonFlow agent refused the request, HTTP ${SCAN_HTTP}${SCAN_SAID}"
       ;;
     *)
       axonflow_post_ungoverned "the AxonFlow agent answered HTTP ${SCAN_HTTP}${SCAN_SAID}"
@@ -309,7 +329,7 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
         axonflow_post_ungoverned "the AxonFlow agent answered a server error (code ${SCAN_RPC_CODE}; AxonFlow said: \"${SCAN_RPC_ERROR}\")"
         ;;
       *)
-        axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (the AxonFlow agent refused the check, code ${SCAN_RPC_CODE}; AxonFlow said: \"${SCAN_RPC_ERROR}\"). Do not use or reference the output in your response until it can be checked."
+        axonflow_post_unchecked "the AxonFlow agent refused the check, code ${SCAN_RPC_CODE}; AxonFlow said: \"${SCAN_RPC_ERROR}\""
         ;;
     esac
   fi
@@ -318,7 +338,7 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
   if [ -z "$SCAN_RESULT" ]; then
     # A JSON-RPC result with no tool result carries no decision.
     if echo "$SCAN_RESPONSE" | jq -e 'has("result")' >/dev/null 2>&1; then
-      axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (the AxonFlow agent returned no decision). Do not use or reference the output in your response until it can be checked."
+      axonflow_post_unchecked "the AxonFlow agent returned no decision"
     fi
     axonflow_post_ungoverned "the AxonFlow agent's answer (HTTP ${SCAN_HTTP}) was not a check result"
   fi
@@ -333,10 +353,10 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
       axonflow_post_alert "$AXONFLOW_LIMIT_POST_ALERT"
     fi
     SCAN_ERROR=$(axonflow_clean_text "$(echo "$SCAN_RESULT" | jq -r '.error // empty' 2>/dev/null)")
-    axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (${SCAN_ERROR:-the AxonFlow agent returned no decision}). Do not use or reference the output in your response until it can be checked."
+    axonflow_post_unchecked "${SCAN_ERROR:-the AxonFlow agent returned no decision}"
   fi
   REDACTED=$(echo "$SCAN_RESULT" | jq -r '.redacted_message // empty' 2>/dev/null || echo "")
-  POLICIES_FOUND=$(echo "$SCAN_RESULT" | jq -r '.policies_evaluated // 0' 2>/dev/null || echo "0")
+  POLICIES_FOUND=$(axonflow_clean_text "$(echo "$SCAN_RESULT" | jq -r '.policies_evaluated // 0' 2>/dev/null)")
   ALLOWED=$(echo "$SCAN_RESULT" | jq -r 'if .allowed == false then "false" else "true" end' 2>/dev/null || echo "true")
 
   if [ -n "$REDACTED" ] && [ "$REDACTED" != "null" ]; then

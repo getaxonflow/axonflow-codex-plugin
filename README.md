@@ -323,10 +323,13 @@ export AXONFLOW_USER_TOKEN=<token minted by your org admin>
 | A rejected credential: HTTP 401, JSON-RPC `-32001`, or the cooldown a 401 starts (300 seconds unless `AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS` says otherwise) | **blocked** (exit 2), with or without a per-user token | governance alert: do not use the output |
 | A request limit: HTTP 429, or a Free-tier limit | **blocked** (exit 2) | governance alert |
 | A refusal (endpoint, credential or configuration): a 3xx redirect, a 4xx other than 408 without a JSON-RPC answer (a 413 names the size limit), or a JSON-RPC error other than `-32603` / `-32700`, with or without a message or a code | **blocked** (exit 2) | governance alert |
+| A policy result that decides nothing: no boolean `allowed`, or flagged `isError` | **blocked** (exit 2) | governance alert |
 | The check request for this call could not be built | **blocked** (exit 2) | governance alert |
 | No usable answer: unreachable, timeout, HTTP 408, 5xx, JSON-RPC `-32603` / `-32700`, an empty or unreadable body, `jq` or `curl` missing | `AXONFLOW_FAIL_MODE` unset, empty or `open` (the default): runs **ungoverned**, with a `GOVERNANCE UNAVAILABLE` notice on stderr. Any other value, such as `closed`: **blocked** (exit 2) | `open`: the output passes, with the notice. Otherwise: governance alert |
 
-`AXONFLOW_FAIL_MODE` decides only the last row: a rejected credential, a limit, a refusal and a policy deny block whatever it says. Unset, empty or `open` (in any case) runs; any other value blocks. The 401 cooldown spares the agent a retry storm; it never lets a tool call run. While it holds, the block names the seconds left and its stamp file (`throttle-until` in the AxonFlow cache directory, which every AxonFlow plugin using that directory writes); after fixing the credential, delete that file to retry at once. The platform's own words in a block or an alert are quoted as the platform's, with control characters removed.
+`AXONFLOW_FAIL_MODE` decides only the last row: a rejected credential, a limit, a refusal and a policy deny block whatever it says. Unset, empty or `open` (in any case) runs; any other value blocks. The 401 cooldown spares the agent a retry storm; it never lets a tool call run. While it holds, the block names the seconds left and its stamp file (`throttle-until` in the AxonFlow cache directory, which every AxonFlow plugin using that directory writes); after fixing the credential, delete that file to retry at once. Every value the agent sends that the hooks print or hand to Codex (an error or refusal text, a block reason, a decision id, a risk level, a policy count, the Free-tier wording and link) has its control characters removed; an error or refusal text is also quoted as the agent's (`AxonFlow said: "..."`).
+
+**What the hooks cannot see on Codex.** Codex fires PreToolUse for an exec (`tool_name` `Bash`) but not for `write_stdin`, so a model can type a command into a shell that is already running with no PreToolUse check. An exec that is still running when the tool call returns gets no PostToolUse, so its output is not scanned. And `hooks/hooks.json` matches `Bash|exec_command|shell` only, so file edits through `apply_patch` are not checked. Tracked in #101.
 
 ### Per-user authorization token (`AXONFLOW_USER_TOKEN`)
 
@@ -625,7 +628,7 @@ axonflow-codex-plugin/
 bash tests/e2e/smoke-block-context.sh
 ```
 
-The smoke scenario runs the plugin's `pre-tool-check.sh` against a running platform, feeds a SQLi-bearing Bash tool invocation through it, and asserts Codex's deny semantics (exit 2 + stderr prefix `AxonFlow policy violation`) carry the richer-context markers (`decision:`, `risk:`). Exits 0 with `SKIP:` if no stack is reachable.
+The smoke scenario runs the plugin's `pre-tool-check.sh` against a running platform, feeds a destructive Bash command (`rm -rf / --no-preserve-root`) through it, and asserts Codex's deny semantics (exit 2 + stderr prefix `AxonFlow policy violation`) carry the decision id (`decision:`). Exits 0 with `SKIP:` if no stack is reachable.
 
 For the broader validation story — explain-decision, audit-filter parity, cache invalidation — see the [Codex integration guide](https://docs.getaxonflow.com/docs/integration/codex/).
 

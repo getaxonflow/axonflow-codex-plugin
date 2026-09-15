@@ -43,6 +43,18 @@ _AXONFLOW_AUTH_PROMPT_STAMP="${_AXONFLOW_CACHE_DIR}/auth-failure-prompt-last-sho
 # (canonical env-var name shared across the AxonFlow plugin family) can
 # override for testing/tuning without re-sourcing.
 
+# Text from the network is cleaned before it is printed (axonflow_clean_text,
+# scripts/lib/failure-posture.sh). The hooks source that file before this one;
+# a script that sources this file on its own gets it here.
+if ! command -v axonflow_clean_text >/dev/null 2>&1; then
+  _axonflow_prompt_dir="${BASH_SOURCE[0]%/*}"
+  if [ "$_axonflow_prompt_dir" = "${BASH_SOURCE[0]}" ]; then
+    _axonflow_prompt_dir="."
+  fi
+  # shellcheck source=./lib/failure-posture.sh
+  . "${_axonflow_prompt_dir}/lib/failure-posture.sh" 2>/dev/null
+fi
+
 _axonflow_ensure_cache_dir() {
   if [ ! -d "$_AXONFLOW_CACHE_DIR" ]; then
     mkdir -p "$_AXONFLOW_CACHE_DIR" 2>/dev/null && chmod 0700 "$_AXONFLOW_CACHE_DIR" 2>/dev/null
@@ -241,8 +253,8 @@ axonflow_handle_envelope_response() {
       buy_url="https://getaxonflow.com/pricing/"
     fi
     {
-      echo "[AxonFlow] ${wording}"
-      echo "[AxonFlow] Upgrade: ${buy_url}"
+      echo "[AxonFlow] $(axonflow_clean_text "$wording")"
+      echo "[AxonFlow] Upgrade: $(axonflow_clean_text "$buy_url")"
     } >&2
   fi
   return 0
