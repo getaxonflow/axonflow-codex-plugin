@@ -51,9 +51,10 @@ _axonflow_ensure_cache_dir() {
 
 # axonflow_throttle_active
 #   Returns 0 if a throttle deadline is in effect (current epoch < stamp).
-#   Caller should skip outbound governed calls and fall open for this hook.
-#   On first hook of a new throttle period the function also re-emits a
-#   short stderr nudge so the operator sees they're in the back-off window.
+#   Caller should skip outbound governed calls and answer locally: both
+#   stamps (a Free-tier limit and the 401 auth_failure cooldown) block the
+#   tool call in pre-tool-check.sh and withhold the output in
+#   post-tool-audit.sh.
 axonflow_throttle_active() {
   if [ ! -f "$_AXONFLOW_THROTTLE_FILE" ]; then
     return 1
@@ -77,10 +78,9 @@ axonflow_throttle_active() {
 # axonflow_throttle_reason
 #   Prints the reason recorded alongside the active throttle deadline
 #   ("auth_failure" for a 401 cooldown, the envelope's limit_type for
-#   quota throttles, empty when absent). Callers use this to branch on
-#   WHY governance is paused — e.g. pre-tool-check.sh fails CLOSED on an
-#   auth_failure throttle when a per-user token is configured
-#   (axonflow-enterprise#2944), instead of the default fall-open.
+#   quota throttles, empty when absent). Callers use this to name WHY the
+#   call is answered locally: pre-tool-check.sh blocks with the credential
+#   text for auth_failure and with the Free-tier text for a quota.
 axonflow_throttle_reason() {
   [ -f "$_AXONFLOW_THROTTLE_FILE" ] || return 0
   awk 'NR==1 {print $2}' "$_AXONFLOW_THROTTLE_FILE" 2>/dev/null
@@ -289,7 +289,7 @@ axonflow_handle_auth_failure() {
   # off the network immediately even when the prompt is suppressed.
   if _axonflow_should_show_auth_prompt_today; then
     {
-      echo "[AxonFlow] Authentication failed (HTTP 401) against the AxonFlow agent. Tool governance is paused for 5 minutes."
+      echo "[AxonFlow] Authentication failed (HTTP 401) against the AxonFlow agent. Governed tool calls are blocked until the credential is fixed; the agent is not asked again for ${cooldown} seconds."
       echo "[AxonFlow] Refresh your credentials: https://getaxonflow.com/dashboard"
       # axonflow-enterprise#2944: when a per-user token was sent, name it as
       # a likely cause — the platform fails closed on a presented-but-invalid

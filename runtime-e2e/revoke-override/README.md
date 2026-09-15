@@ -1,10 +1,12 @@
 # revoke-override — runtime E2E
 
-**Asserts:** Drives the runtime to dispatch delete_override (server-side name) with a fabricated override_id; platform returns 404 and agent surfaces it.
+**Asserts:** session overrides are retired from AxonFlow v11.0.0, so no override can be seeded to revoke. A real Codex agent calls `delete_override`. The same call made directly answers a tool error (`isError: true`) whose text begins `LEGACY_POLICY_WRITE_FROZEN: `; the agent surfaces `LEGACY_POLICY_WRITE_FROZEN`; the server-side `list_overrides` count is unchanged.
 
-**Prereqs:** runtime CLI on PATH and authenticated; `jq`; live AxonFlow stack reachable at `$AXONFLOW_ENDPOINT` (default `http://localhost:8080`).
+**Measured contract** (AxonFlow v11.0.0 community, `AXONFLOW_TRUST_IDENTITY_HEADERS=true`): `delete_override` answers the frozen tool error with or without a per-user identity on the session.
 
-**Required deployment posture:** the override endpoints are scoped to an individual user, so a per-user identity must reach the platform. On a default deployment it does not: `AXONFLOW_TRUST_IDENTITY_HEADERS` defaults to **off** (since 9.9.0), so the override seed fails and this test **fails** with the remediation printed (it used to skip silently and report green — #3062).
+**Prereqs:** `codex` CLI on PATH and authenticated; `jq`; `python3`; a live AxonFlow v11.0.0+ stack with its orchestrator (for the `list_overrides` count), reachable at `$AXONFLOW_ENDPOINT` (default `http://localhost:8080`).
+
+**Required deployment posture:** the test presents `X-User-Email` on the MCP session (see `create-override/README.md`); the agent honours it only with:
 
 ```bash
 AXONFLOW_TRUST_IDENTITY_HEADERS=true   # on the AGENT, then restart it

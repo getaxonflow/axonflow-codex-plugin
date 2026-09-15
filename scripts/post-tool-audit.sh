@@ -5,12 +5,47 @@
 # 1. Records tool execution in AxonFlow audit trail (fire-and-forget, background)
 # 2. Scans tool output for PII/secrets (synchronous — returns context to Codex)
 #
-# This script is best-effort: failures never block tool execution.
-# Codex PostToolUse always exits 0 — never blocks.
+# Codex PostToolUse always exits 0 — it never blocks; the tool already ran.
+# When the output could not be checked it says so, one of two ways:
+#   - an answer that refused the check (a 401 or its cooldown, a 429 or a
+#     Free-tier limit, another 4xx without a decision body, a result without
+#     a decision) -> a GOVERNANCE ALERT telling the model not to use the output;
+#   - no usable answer (unreachable, timeout, 5xx, JSON-RPC -32603 / -32700, an
+#     empty or unreadable body, jq or curl missing) -> AXONFLOW_FAIL_MODE
+#     decides: "open" (the default) passes the output with a notice on stderr;
+#     anything else raises the same GOVERNANCE ALERT.
 
-# Fail-open: if jq/curl not available, exit silently
-if ! command -v jq &>/dev/null || ! command -v curl &>/dev/null; then
+# Emit a PostToolUse governance alert and stop. Without jq the JSON is written
+# by hand; the message is this script's own text, and double quotes and
+# backslashes are dropped from it so the document stays valid.
+axonflow_post_alert() {
+  if command -v jq &>/dev/null; then
+    jq -n --arg m "$1" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $m}}'
+  else
+    printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s"}}\n' "$(printf '%s' "$1" | tr -d '"\\')"
+  fi
   exit 0
+}
+
+# The output could not be checked because no usable answer arrived.
+# AXONFLOW_FAIL_MODE decides: "open" (the default, case-insensitive) passes the
+# output and says so on stderr; any other value tells the model not to use it.
+axonflow_post_ungoverned() {
+  local mode
+  mode=$(printf '%s' "${AXONFLOW_FAIL_MODE:-open}" | tr '[:upper:]' '[:lower:]')
+  if [ "$mode" != "open" ]; then
+    axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output ($1, and AXONFLOW_FAIL_MODE is not open). Do not use or reference the output in your response until it can be checked."
+  fi
+  echo "[AxonFlow] GOVERNANCE UNAVAILABLE: $1. This tool output was NOT checked. Set AXONFLOW_FAIL_MODE=closed to withhold unchecked output from the model." >&2
+  exit 0
+}
+
+# The hook cannot read the tool call or reach AxonFlow without these.
+if ! command -v jq &>/dev/null; then
+  axonflow_post_ungoverned "the AxonFlow hook needs jq, which is not installed"
+fi
+if ! command -v curl &>/dev/null; then
+  axonflow_post_ungoverned "the AxonFlow hook needs curl, which is not installed"
 fi
 
 # Endpoint resolution per ADR-048: default to AxonFlow Community SaaS only when
@@ -45,22 +80,17 @@ AUTH="${AXONFLOW_AUTH:-}"
 # shellcheck disable=SC1091
 . "${SCRIPT_DIR}/upgrade-prompt.sh"
 
-# Emit a PostToolUse governance alert and stop.
-axonflow_post_alert() {
-  jq -n --arg m "$1" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $m}}'
-  exit 0
-}
+AUTH_ALERT="GOVERNANCE ALERT: AxonFlow could not check this tool output (the AxonFlow agent rejected authentication, HTTP 401). Do not use or reference the output in your response until the credential is fixed and it can be checked."
 
-# When a recent governed call landed on a Free-tier cap, the throttle file
-# tells us to stop sending traffic until the deadline. While a hosted
-# Free-tier limit holds, the output cannot be checked, so the model is told
-# not to use it (ruled 2026-09-14; reversible here). The 401 pause
-# (auth_failure) still stays silent.
+# A recent governed call stamped the throttle-until file, and the hook answers
+# locally until the deadline passes. The output cannot be checked while either
+# stamp holds, so the model is told not to use it: a hosted Free-tier limit
+# (ruled 2026-09-14) or the 401 cooldown (auth_failure).
 if axonflow_throttle_active; then
-  if [ "$(axonflow_throttle_reason)" != "auth_failure" ]; then
-    axonflow_post_alert "$AXONFLOW_LIMIT_POST_ALERT"
+  if [ "$(axonflow_throttle_reason)" = "auth_failure" ]; then
+    axonflow_post_alert "$AUTH_ALERT"
   fi
-  exit 0
+  axonflow_post_alert "$AXONFLOW_LIMIT_POST_ALERT"
 fi
 
 AUTH_HEADER=()
@@ -209,68 +239,118 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
             message: $msg
           }
         }
-      }')" 2>/dev/null) || SCAN_HTTP=""
+      }')" 2>/dev/null)
+  SCAN_CURL_EXIT=$?
+
+  # No answer arrived: timeout, DNS failure, connection refused, TCP reset.
+  if [ "$SCAN_CURL_EXIT" -ne 0 ]; then
+    axonflow_post_ungoverned "the AxonFlow agent at ${ENDPOINT} could not be reached (curl exit ${SCAN_CURL_EXIT})"
+  fi
 
   # V1 Plugin Pro: stamp throttle + show the upgrade prompt on envelope
   # responses, and tell the model the output could not be checked.
   if axonflow_handle_envelope_response "$SCAN_HTTP" "$SCAN_BODY" "$SCAN_HEADERS"; then
     axonflow_post_alert "$AXONFLOW_LIMIT_POST_ALERT"
   fi
-  # axonflow-enterprise#2275: stamp a 5-minute throttle on HTTP 401 so a
-  # tight retry loop can't keep firing the same auth-failing scan request.
+  # axonflow-enterprise#2275: a 401 stamps a 5-minute cooldown (the helper) so a
+  # tight retry loop can't keep firing the same auth-failing scan request, and
+  # the model is told not to use the unchecked output.
   if axonflow_handle_auth_failure "$SCAN_HTTP" "$SCAN_BODY" "$SCAN_HEADERS"; then
-    exit 0
+    axonflow_post_alert "$AUTH_ALERT"
   fi
   SCAN_RESPONSE=$(cat "$SCAN_BODY" 2>/dev/null || echo "")
 
-  # If PII was found, add context
-  if [ -n "$SCAN_RESPONSE" ]; then
-    SCAN_RESULT=$(echo "$SCAN_RESPONSE" | jq -r '.result.content[0].text // empty' 2>/dev/null || echo "")
+  # The status of an answer the lines above did not settle, judged the way
+  # pre-tool-check.sh judges it: a JSON-RPC answer (a result or an error) is the
+  # platform's answer whatever the status; only a body without one is judged by
+  # its status.
+  SCAN_TEXT=$(printf '%s' "$SCAN_RESPONSE" | jq -r 'if type == "object" then (.error.message? // (.error | strings?) // .message? // empty) else empty end' 2>/dev/null | tr '\n' ' ' | sed -e 's/[[:space:]]*$//' | cut -c1-300)
+  SCAN_IS_JSONRPC=$(printf '%s' "$SCAN_RESPONSE" | jq -r 'if type == "object" and has("jsonrpc") and (has("result") or has("error")) then "true" else "false" end' 2>/dev/null || echo "false")
+  if [ "$SCAN_HTTP" = "429" ]; then
+    axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (the AxonFlow agent answered HTTP 429, a request limit${SCAN_TEXT:+: $SCAN_TEXT}). Do not use or reference the output in your response until it can be checked."
+  fi
+  case "$SCAN_HTTP" in
+    2??) ;;
+    *)
+      if [ "$SCAN_IS_JSONRPC" != "true" ]; then
+        case "$SCAN_HTTP" in
+          4??)
+            axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (the AxonFlow agent refused the request, HTTP ${SCAN_HTTP}${SCAN_TEXT:+: $SCAN_TEXT}). Do not use or reference the output in your response until it can be checked."
+            ;;
+          *)
+            axonflow_post_ungoverned "the AxonFlow agent answered HTTP ${SCAN_HTTP}${SCAN_TEXT:+ ($SCAN_TEXT)}"
+            ;;
+        esac
+      fi
+      ;;
+  esac
+
+  if [ -z "$SCAN_RESPONSE" ]; then
+    axonflow_post_ungoverned "the AxonFlow agent answered HTTP ${SCAN_HTTP} with an empty body"
+  fi
+
+  # A JSON-RPC error is not a check. Server-internal and parse errors are no
+  # usable answer; every other code (auth, method, params, unknown) refused it.
+  SCAN_RPC_ERROR=$(echo "$SCAN_RESPONSE" | jq -r '.error.message // empty' 2>/dev/null || echo "")
+  if [ -n "$SCAN_RPC_ERROR" ]; then
+    SCAN_RPC_CODE=$(echo "$SCAN_RESPONSE" | jq -r '.error.code // 0' 2>/dev/null || echo "0")
+    case "$SCAN_RPC_CODE" in
+      -32603|-32700)
+        axonflow_post_ungoverned "the AxonFlow agent answered a server error (${SCAN_RPC_ERROR}, code ${SCAN_RPC_CODE})"
+        ;;
+      *)
+        axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (${SCAN_RPC_ERROR}, code ${SCAN_RPC_CODE}). Do not use or reference the output in your response until it can be checked."
+        ;;
+    esac
+  fi
+
+  SCAN_RESULT=$(echo "$SCAN_RESPONSE" | jq -r '.result.content[0].text // empty' 2>/dev/null || echo "")
+  if [ -z "$SCAN_RESULT" ]; then
     # A JSON-RPC result with no tool result carries no decision.
-    if [ -z "$SCAN_RESULT" ] && echo "$SCAN_RESPONSE" | jq -e 'has("result")' >/dev/null 2>&1; then
+    if echo "$SCAN_RESPONSE" | jq -e 'has("result")' >/dev/null 2>&1; then
       axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (the AxonFlow agent returned no decision). Do not use or reference the output in your response until it can be checked."
     fi
-    if [ -n "$SCAN_RESULT" ]; then
-      # A result flagged isError, or one without a boolean `allowed`, is not a
-      # decision (ruled 2026-09-14). The Free-tier cap answers this way with its
-      # upgrade envelope as the text: the handler still shows the prompt.
-      SCAN_IS_ERROR=$(echo "$SCAN_RESPONSE" | jq -r 'if .result.isError == true then "true" else "false" end' 2>/dev/null || echo "false")
-      SCAN_HAS_DECISION=$(echo "$SCAN_RESULT" | jq -r 'if (.allowed | type) == "boolean" then "true" else "false" end' 2>/dev/null || echo "false")
-      if [ "$SCAN_IS_ERROR" = "true" ] || [ "$SCAN_HAS_DECISION" != "true" ]; then
-        if axonflow_handle_envelope_text "$SCAN_RESULT"; then
-          axonflow_post_alert "$AXONFLOW_LIMIT_POST_ALERT"
-        fi
-        SCAN_ERROR=$(echo "$SCAN_RESULT" | jq -r '.error // empty' 2>/dev/null || echo "")
-        axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (${SCAN_ERROR:-the AxonFlow agent returned no decision}). Do not use or reference the output in your response until it can be checked."
-      fi
-      REDACTED=$(echo "$SCAN_RESULT" | jq -r '.redacted_message // empty' 2>/dev/null || echo "")
-      POLICIES_FOUND=$(echo "$SCAN_RESULT" | jq -r '.policies_evaluated // 0' 2>/dev/null || echo "0")
-      ALLOWED=$(echo "$SCAN_RESULT" | jq -r 'if .allowed == false then "false" else "true" end' 2>/dev/null || echo "true")
+    axonflow_post_ungoverned "the AxonFlow agent's answer (HTTP ${SCAN_HTTP}) was not a check result"
+  fi
 
-      if [ -n "$REDACTED" ] && [ "$REDACTED" != "null" ]; then
-        jq -n \
-          --arg redacted "$REDACTED" \
-          --arg policies "$POLICIES_FOUND" \
-          '{
-            hookSpecificOutput: {
-              hookEventName: "PostToolUse",
-              additionalContext: ("GOVERNANCE ALERT: PII/sensitive data detected in tool output (" + $policies + " policies evaluated). You MUST use this redacted version instead of the original: " + $redacted)
-            }
-          }'
-        exit 0
-      elif [ "$ALLOWED" = "false" ]; then
-        BLOCK_REASON=$(echo "$SCAN_RESULT" | jq -r '.block_reason // "Policy violation in tool output"' 2>/dev/null || echo "")
-        jq -n \
-          --arg reason "$BLOCK_REASON" \
-          '{
-            hookSpecificOutput: {
-              hookEventName: "PostToolUse",
-              additionalContext: ("GOVERNANCE ALERT: Tool output blocked by policy: " + $reason + ". Do not use or reference the blocked output in your response.")
-            }
-          }'
-        exit 0
-      fi
+  # A result flagged isError, or one without a boolean `allowed`, is not a
+  # decision (ruled 2026-09-14). The Free-tier cap answers this way with its
+  # upgrade envelope as the text: the handler still shows the prompt.
+  SCAN_IS_ERROR=$(echo "$SCAN_RESPONSE" | jq -r 'if .result.isError == true then "true" else "false" end' 2>/dev/null || echo "false")
+  SCAN_HAS_DECISION=$(echo "$SCAN_RESULT" | jq -r 'if (.allowed | type) == "boolean" then "true" else "false" end' 2>/dev/null || echo "false")
+  if [ "$SCAN_IS_ERROR" = "true" ] || [ "$SCAN_HAS_DECISION" != "true" ]; then
+    if axonflow_handle_envelope_text "$SCAN_RESULT"; then
+      axonflow_post_alert "$AXONFLOW_LIMIT_POST_ALERT"
     fi
+    SCAN_ERROR=$(echo "$SCAN_RESULT" | jq -r '.error // empty' 2>/dev/null || echo "")
+    axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (${SCAN_ERROR:-the AxonFlow agent returned no decision}). Do not use or reference the output in your response until it can be checked."
+  fi
+  REDACTED=$(echo "$SCAN_RESULT" | jq -r '.redacted_message // empty' 2>/dev/null || echo "")
+  POLICIES_FOUND=$(echo "$SCAN_RESULT" | jq -r '.policies_evaluated // 0' 2>/dev/null || echo "0")
+  ALLOWED=$(echo "$SCAN_RESULT" | jq -r 'if .allowed == false then "false" else "true" end' 2>/dev/null || echo "true")
+
+  if [ -n "$REDACTED" ] && [ "$REDACTED" != "null" ]; then
+    jq -n \
+      --arg redacted "$REDACTED" \
+      --arg policies "$POLICIES_FOUND" \
+      '{
+        hookSpecificOutput: {
+          hookEventName: "PostToolUse",
+          additionalContext: ("GOVERNANCE ALERT: PII/sensitive data detected in tool output (" + $policies + " policies evaluated). You MUST use this redacted version instead of the original: " + $redacted)
+        }
+      }'
+    exit 0
+  elif [ "$ALLOWED" = "false" ]; then
+    BLOCK_REASON=$(echo "$SCAN_RESULT" | jq -r '.block_reason // "Policy violation in tool output"' 2>/dev/null || echo "")
+    jq -n \
+      --arg reason "$BLOCK_REASON" \
+      '{
+        hookSpecificOutput: {
+          hookEventName: "PostToolUse",
+          additionalContext: ("GOVERNANCE ALERT: Tool output blocked by policy: " + $reason + ". Do not use or reference the blocked output in your response.")
+        }
+      }'
+    exit 0
   fi
 fi
 

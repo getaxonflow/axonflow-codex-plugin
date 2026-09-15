@@ -14,16 +14,21 @@ set -uo pipefail
 
 : "${AXONFLOW_ENDPOINT:=http://localhost:8080}"
 : "${MCP_SERVER_NAME:=axonflow_w2_e2e}"
+# The per-user identity the override suites present. An override write is
+# scoped to an individual user, and the platform refuses a session with no
+# per-user identity for that reason before it answers anything else.
+: "${AXONFLOW_E2E_USER_EMAIL:=codex-runtime-e2e@axonflow-test.invalid}"
 
-# #3062: mcp_seed_override runs inside $(...) and cannot return the raw MCP
-# response through a variable — a subshell's assignments are lost — so it writes
-# the response here for require_mcp_override_seed to report on failure.
-#
-# Deterministic per-PID path rather than mktemp + an EXIT trap: every test in
-# this suite installs its own `trap ... EXIT`, which would silently replace a
-# trap set here. One small file per run, overwritten in place across calls, and
-# require_mcp_override_seed removes it on both paths.
-: "${MCP_SEED_RESPONSE_FILE:=${TMPDIR:-/tmp}/axonflow-codex-mcp-seed.$$}"
+# The session-override writes are retired from AxonFlow v11.0.0. Measured on a
+# v11.0.0 community stack with AXONFLOW_TRUST_IDENTITY_HEADERS=true:
+#   - MCP create_override / delete_override answer a tool error (isError: true)
+#     whose text begins with OVERRIDE_FROZEN_PREFIX. create_override on a
+#     session with no per-user identity is refused for its identity first.
+#   - REST POST / DELETE /api/v1/overrides with a per-user identity answer
+#     HTTP 409 {"error":{"code":"LEGACY_POLICY_WRITE_FROZEN","message":...}}.
+#   - list_overrides and GET /api/v1/overrides are unchanged reads.
+OVERRIDE_FROZEN_PREFIX="LEGACY_POLICY_WRITE_FROZEN: "
+OVERRIDE_FROZEN_CODE="LEGACY_POLICY_WRITE_FROZEN"
 
 runtime_e2e_skip_if_unavailable() {
   if ! command -v codex >/dev/null 2>&1; then
@@ -41,25 +46,97 @@ runtime_e2e_skip_if_unavailable() {
   fi
 }
 
+# The config file `codex mcp add` writes (CODEX_HOME is the codex CLI's own
+# config-root override; scripts/install-mcp-with-headers.sh reads it the same way).
+_codex_config_file() {
+  printf '%s' "${CODEX_HOME:-${HOME}/.codex}/config.toml"
+}
+
+# Remove this test server's http_headers table, if a test wrote one.
+_codex_strip_test_headers() {
+  local config
+  config=$(_codex_config_file)
+  [ -f "$config" ] || return 0
+  python3 - "$config" "$MCP_SERVER_NAME" <<'PY'
+import pathlib, re, sys
+path, name = pathlib.Path(sys.argv[1]), sys.argv[2]
+text = path.read_text()
+stripped = re.sub(r'\n?\[mcp_servers\.' + re.escape(name) + r'\.http_headers\][^\[]*', '', text)
+if stripped != text:
+    path.write_text(stripped)
+PY
+}
+
 codex_register_mcp() {
+  _codex_strip_test_headers
   codex mcp remove "$MCP_SERVER_NAME" >/dev/null 2>&1 || true
   codex mcp add "$MCP_SERVER_NAME" --url "$AXONFLOW_ENDPOINT/api/v1/mcp-server" >/dev/null
 }
 
+# Register the test server with a static X-User-Email on every MCP request,
+# written the way scripts/install-mcp-with-headers.sh writes its header table.
+# The agent honours it only with AXONFLOW_TRUST_IDENTITY_HEADERS=true.
+codex_register_mcp_with_identity() {
+  codex_register_mcp
+  python3 - "$(_codex_config_file)" "$MCP_SERVER_NAME" "$AXONFLOW_E2E_USER_EMAIL" <<'PY'
+import pathlib, sys
+path, name, email = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+text = path.read_text()
+if not text.endswith("\n"):
+    text += "\n"
+text += f'\n[mcp_servers.{name}.http_headers]\n"X-User-Email" = "{email}"\n'
+path.write_text(text)
+PY
+}
+
 codex_cleanup_mcp() {
+  _codex_strip_test_headers
   codex mcp remove "$MCP_SERVER_NAME" >/dev/null 2>&1 || true
 }
+
+# The line codex_exec_capture writes before the agent's own final message.
+# Codex echoes the prompt into its output, and every prompt here spells out
+# the SMOKE_RESULT it asks for, so a check that reads the whole capture passes
+# even when the agent never answered. Checks of the agent's answer read only
+# what follows this line.
+CODEX_LAST_MESSAGE_MARKER="=== codex-runtime: agent final message ==="
 
 codex_exec_capture() {
   local prompt="$1"
   local output_file="$2"
+  local last_message
+  last_message=$(mktemp -t axonflow-codex-last.XXXXXX)
   # Order matters: `>file 2>&1` first redirects stdout to file, then dups
   # stderr to the same fd (the file). The reverse order — `2>&1 >file` —
   # leaves stderr at the inherited terminal because the dup happens
   # against the pre-redirection stdout. We want both streams in the file
   # so the grep assertions can find Codex's `mcp: started/(completed)`
   # diagnostic lines.
-  timeout 90 codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox "$prompt" >"$output_file" 2>&1 || true
+  timeout 90 codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox \
+    --output-last-message "$last_message" "$prompt" >"$output_file" 2>&1 || true
+  # The agent's own final message, and nothing else, after the marker. Empty
+  # when the agent produced none (e.g. the model call failed).
+  printf '\n%s\n' "$CODEX_LAST_MESSAGE_MARKER" >>"$output_file"
+  cat "$last_message" >>"$output_file" 2>/dev/null || true
+  rm -f "$last_message"
+}
+
+# codex_last_message <output_file>: the agent's final message only.
+codex_last_message() {
+  local output_file="$1"
+  awk -v m="$CODEX_LAST_MESSAGE_MARKER" 'found {print} $0 == m {found = 1}' "$output_file"
+}
+
+# smoke_line <output_file>: the JSON after SMOKE_RESULT: in the agent's final
+# message, or empty.
+smoke_line() {
+  codex_last_message "$1" | grep "SMOKE_RESULT:" | tail -1 | sed 's/.*SMOKE_RESULT: *//'
+}
+
+# assert_last_message_contains <output_file> <needle>: the agent's own final
+# message (not the echoed prompt or a tool transcript) contains the needle.
+assert_last_message_contains() {
+  codex_last_message "$1" | grep -qF -- "$2"
 }
 
 assert_mcp_started() {
@@ -82,151 +159,99 @@ assert_mcp_failed() {
 
 assert_smoke_result() {
   local output_file="$1"
-  grep -q "SMOKE_RESULT:" "$output_file"
+  codex_last_message "$output_file" | grep -q "SMOKE_RESULT:"
 }
 
+# The agent's answer only: its final message, never the echoed prompt (which
+# spells out what each test asks the agent to write). Codex's own diagnostic
+# lines are read from the whole capture by assert_mcp_started / _completed /
+# _failed instead.
 assert_output_contains() {
   local output_file="$1"
   local needle="$2"
-  grep -q "$needle" "$output_file"
+  codex_last_message "$output_file" | grep -q -- "$needle"
 }
 
-# Seed an override via the SAME unauthenticated MCP path codex uses, so the
-# tenant resolves to the same value (community in community-mode docker).
-# Direct REST seeds via /api/v1/overrides resolve to a different tenant
-# (demo-client) under community-mode auth, which would invisibly break
-# tenant-scoped lookups (revoke / explain) the agent later issues.
-# Echoes the override id on stdout, or empty string on failure.
-#
-# #3062: the raw MCP response is ALSO written to $MCP_SEED_RESPONSE_FILE so a
-# failed seed can be reported instead of vanishing. This function runs inside a
-# command substitution ($(...)), so it cannot hand the response back through a
-# shell variable — a subshell's assignments are lost. A file survives.
-mcp_seed_override() {
-  local policy_id="${1:-sys_pii_email}"
-  local reason="${2:-mcp-seed}"
-  local ttl="${3:-300}"
-  local payload response
-  payload=$(jq -n --arg pid "$policy_id" --arg r "$reason" --argjson ttl "$ttl" \
-    '{jsonrpc:"2.0",id:"1",method:"tools/call",params:{name:"create_override",arguments:{policy_id:$pid,policy_type:"static",override_reason:$r,ttl_seconds:$ttl}}}')
-  response=$(curl -s -X POST -H "Content-Type: application/json" -d "$payload" \
-    "$AXONFLOW_ENDPOINT/api/v1/mcp-server")
-  printf '%s' "$response" > "$MCP_SEED_RESPONSE_FILE" 2>/dev/null || true
-  printf '%s' "$response" \
+# mcp_tool_call <tool> <arguments JSON> [extra curl arguments ...]
+#   Calls one MCP tool directly (not through codex) and prints the raw JSON-RPC
+#   response: the channel-independent check of what the platform answers.
+mcp_tool_call() {
+  local tool="$1" args="$2"
+  shift 2
+  local payload
+  payload=$(jq -nc --arg t "$tool" --argjson a "$args" '{jsonrpc:"2.0",id:"1",method:"tools/call",params:{name:$t,arguments:$a}}')
+  curl -s -X POST -H "Content-Type: application/json" -H "Accept: application/json" "$@" \
+    -d "$payload" "$AXONFLOW_ENDPOINT/api/v1/mcp-server"
+}
+
+# mcp_override_count [extra curl arguments ...]
+#   The count list_overrides reports, or empty when it did not answer a count.
+mcp_override_count() {
+  mcp_tool_call list_overrides '{"include_revoked":true}' "$@" \
     | jq -r '.result.content[0].text // ""' \
-    | jq -r '.id // ""' 2>/dev/null
+    | jq -r '.count // empty' 2>/dev/null
 }
 
-# require_mcp_override_seed <seed_id>
-#
-# The override lifecycle tests seed state through create_override. When that
-# seed failed, list-overrides / revoke-override printed
-# `SKIP: pre-flight MCP create_override returned empty id` and exited 0 —
-# discarding the response entirely, so the suite reported green while the tools
-# it covers were dead, and left nothing to diagnose with (#3062).
-#
-# A test that skips is not a test. The only legitimate exit-0 here is
-# environment unavailability, checked up-front by runtime_e2e_skip_if_unavailable.
-require_mcp_override_seed() {
-  local seed_id="$1"
-  if [ -n "$seed_id" ]; then
-    rm -f "$MCP_SEED_RESPONSE_FILE"
+# assert_mcp_override_frozen <label> <raw MCP response>
+#   0 when the answer is the retired-write tool error. A test that skips is not
+#   a test (#3062): any other answer FAILS, with the response and the likely cause.
+assert_mcp_override_frozen() {
+  local label="$1" response="$2" is_error text
+  is_error=$(printf '%s' "$response" | jq -r '.result.isError // false' 2>/dev/null)
+  text=$(printf '%s' "$response" | jq -r '.result.content[0].text // ""' 2>/dev/null)
+  if [ "$is_error" = "true" ] && [ "${text#"$OVERRIDE_FROZEN_PREFIX"}" != "$text" ]; then
+    echo "PASS: $label answered the retired write: $(printf '%s' "$text" | cut -c1-100)..."
     return 0
   fi
-
-  echo "FAIL: pre-flight MCP create_override did not return an override id"
-  if [ -s "$MCP_SEED_RESPONSE_FILE" ]; then
-    echo "      Raw MCP response:"
-    # awk, not sed: a response with no trailing newline would otherwise leave
-    # the last line unterminated and swallow the blank line that follows.
-    head -20 "$MCP_SEED_RESPONSE_FILE" | awk '{print "        " $0}'
-  else
-    echo "      (no response captured — the stack may be unreachable)"
-  fi
-  rm -f "$MCP_SEED_RESPONSE_FILE"
-  echo ""
-  echo "      Overrides are scoped to an individual user, so this seed needs a"
-  echo "      per-user identity on the MCP-server plane. Two things commonly"
-  echo "      block it, and the response above says which:"
-  echo ""
-  echo "        1. The agent drops client-asserted identity unless the"
-  echo "           deployment declares its identity source trusted:"
-  echo "             AXONFLOW_TRUST_IDENTITY_HEADERS=true   # on the AGENT, then restart"
-  echo "           Only enable it when every hop that can reach the agent asserts"
-  echo "           end-user identity from a validated source — see"
-  echo "           docs/security/identity-header-trust.md in axonflow-enterprise."
-  echo ""
-  echo "        2. A platform-synthesized SHARED identity (mcp-client:<client-id>)"
-  echo "           may not hold an override — one caller's override would flip a"
-  echo "           deny for every caller on that client. Present a real per-user"
-  echo "           identity or a validated per-user token."
-  return 1
-}
-
-# require_override_preflight <http_status> <body>
-#
-# The REST-path equivalent of require_mcp_override_seed, for the tests that
-# seed over /api/v1/overrides directly. Same rule: a reachable stack that
-# refuses to create an override is a FAILURE, not a skip (#3062).
-require_override_preflight() {
-  local status="$1"
-  local body="${2:-}"
-
-  if [ "$status" = "201" ]; then
-    return 0
-  fi
-
-  echo "FAIL: pre-flight create_override returned HTTP $status (expected 201)"
-  [ -n "$body" ] && echo "      Body: $body"
-  echo ""
-
-  case "$status" in
-    401)
-      echo "      The override endpoints require a per-user identity. This deployment"
-      echo "      is not configured to trust client-asserted identity headers, so the"
-      echo "      AxonFlow Agent removed the X-User-Email this test sent."
-      echo ""
-      echo "      Set the posture this test requires, then re-run:"
-      echo "        AXONFLOW_TRUST_IDENTITY_HEADERS=true   # on the AGENT, then restart it"
-      echo ""
-      echo "      Only enable it when every hop that can reach the agent asserts"
-      echo "      end-user identity from a validated source — see"
-      echo "      docs/security/identity-header-trust.md in axonflow-enterprise."
-      ;;
-    403)
-      echo "      The stack rejected the override on policy grounds. Check the seed"
-      echo "      policy is overridable (not critical-risk, allow_override=true)."
-      ;;
-    404)
-      echo "      The seed policy was not found for this tenant. Confirm the stack's"
-      echo "      migrations ran and that the tenant matches the seeded one."
+  echo "FAIL: $label did not answer a tool error beginning \"$OVERRIDE_FROZEN_PREFIX\" (isError=$is_error)"
+  echo "      Raw MCP response: $(printf '%s' "$response" | cut -c1-600)"
+  case "$text" in
+    *"scoped to an individual user"*)
+      echo "      The session carried no per-user identity, so the platform refused it for"
+      echo "      identity first. The test sends X-User-Email; the agent drops it unless"
+      echo "      AXONFLOW_TRUST_IDENTITY_HEADERS=true is set on it. Only enable that when"
+      echo "      every hop that can reach the agent asserts end-user identity from a"
+      echo "      validated source."
       ;;
   esac
-
   return 1
 }
 
-# Trigger a SQLi-block decision through the unauth MCP path so the resulting
-# decision_id + audit row land in the same tenant codex sees. Echoes the
-# decision_id on stdout.
+# assert_rest_override_frozen <label> <http status> <body>
+#   0 when a REST override write answered 409 LEGACY_POLICY_WRITE_FROZEN.
+assert_rest_override_frozen() {
+  local label="$1" status="$2" body="${3:-}" code
+  code=$(printf '%s' "$body" | jq -r '.error.code? // empty' 2>/dev/null)
+  if [ "$status" = "409" ] && [ "$code" = "$OVERRIDE_FROZEN_CODE" ]; then
+    echo "PASS: $label answered HTTP 409 $OVERRIDE_FROZEN_CODE"
+    return 0
+  fi
+  echo "FAIL: $label answered HTTP $status (expected 409 $OVERRIDE_FROZEN_CODE)"
+  [ -n "$body" ] && echo "      Body: $(printf '%s' "$body" | cut -c1-600)"
+  if [ "$status" = "401" ]; then
+    echo "      The override endpoints check a per-user identity before they answer the"
+    echo "      retirement. The agent removed the X-User-Email this test sent: set"
+    echo "      AXONFLOW_TRUST_IDENTITY_HEADERS=true on the AGENT and restart it (only when"
+    echo "      every hop that can reach it asserts end-user identity from a validated source)."
+  fi
+  return 1
+}
+
+# Mint a BLOCKED decision through the unauth MCP path so the resulting
+# decision_id + audit row land in the same tenant codex sees. The statement is a
+# destructive shell command, which the platform's shipped
+# sys_dangerous_destructive_fs control blocks on check_policy. The SQL-injection
+# statement this used before is ALLOWED by check_policy on AxonFlow v11.0.0, and
+# an allowed decision has nothing to explain (explain_decision answers "Decision
+# not found"). Echoes the decision_id only when the answer is a block, so a seed
+# that was not blocked fails the caller's guard instead of passing an allow on.
 mcp_seed_block() {
   local marker="${1:-mcp-block-$(date +%s)}"
   local payload
-  payload=$(jq -n --arg m "SELECT * FROM users WHERE id=1 OR 1=1; -- $marker" \
-    '{jsonrpc:"2.0",id:"1",method:"tools/call",params:{name:"check_policy",arguments:{connector_type:"sql",statement:$m,operation:"query"}}}')
+  payload=$(jq -n --arg m "rm -rf / --no-preserve-root # $marker" \
+    '{jsonrpc:"2.0",id:"1",method:"tools/call",params:{name:"check_policy",arguments:{connector_type:"codex.Bash",statement:$m,operation:"execute"}}}')
   curl -s -X POST -H "Content-Type: application/json" -d "$payload" \
     "$AXONFLOW_ENDPOINT/api/v1/mcp-server" \
     | jq -r '.result.content[0].text // ""' \
-    | jq -r '.decision_id // ""' 2>/dev/null
-}
-
-# Revoke-by-id via unauth MCP for cleanup. Quiet on failure.
-mcp_cleanup_override() {
-  local id="$1"
-  [ -z "$id" ] && return
-  local payload
-  payload=$(jq -n --arg id "$id" \
-    '{jsonrpc:"2.0",id:"1",method:"tools/call",params:{name:"delete_override",arguments:{override_id:$id}}}')
-  curl -s -X POST -H "Content-Type: application/json" -d "$payload" \
-    "$AXONFLOW_ENDPOINT/api/v1/mcp-server" >/dev/null 2>&1 || true
+    | jq -r 'if .allowed == false then (.decision_id // empty) else empty end' 2>/dev/null
 }

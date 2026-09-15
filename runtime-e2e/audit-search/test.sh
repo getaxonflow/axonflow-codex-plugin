@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Codex runtime E2E: audit-search OUTCOME TEST (W2 — rule #1)
 #
-# Outcome verification, not just dispatch. Seeds a unique marker into
-# the platform's audit log via a real SQLi block, drives a real Codex
-# agent through search_audit_events, asserts the agent's reply
-# CONTAINS the marker.
+# Outcome verification, not just dispatch. Mints a real blocked decision through
+# the same unauthenticated MCP path Codex uses (so it lands in the tenant Codex
+# searches), drives a real Codex agent through search_audit_events, and asserts
+# the agent's own final message reports the seeded decision.
+#
+# The seed is found by its decision_id. On AxonFlow v11.0.0 an audit entry's
+# query field is a summary ("mcp check_policy: codex.Bash"), not the statement,
+# so a marker placed in the statement cannot be found by text (measured).
 
 set -uo pipefail
 
@@ -18,39 +22,40 @@ trap codex_cleanup_mcp EXIT
 codex_register_mcp
 echo "--- Registered Codex MCP server: $MCP_SERVER_NAME -> $AXONFLOW_ENDPOINT/api/v1/mcp-server"
 
-MARKER="w2-runtime-e2e-audit-marker-$(date +%s)-$RANDOM"
-echo "--- Seeding audit marker: $MARKER ---"
-curl -s -X POST \
-  -H "Authorization: Basic $(printf 'demo-client:demo-secret' | base64)" \
-  -H "Content-Type: application/json" \
-  -d "{\"connector_type\":\"sql\",\"statement\":\"SELECT * FROM users WHERE id=1 OR 1=1; -- $MARKER\",\"operation\":\"query\"}" \
-  "$AXONFLOW_ENDPOINT/api/v1/mcp/check-input" >/dev/null
+SEED_TAG="w2-runtime-e2e-audit-$(date +%s)-$RANDOM"
+echo "--- Seeding a blocked decision via the MCP path (same tenant codex sees): $SEED_TAG ---"
+DECISION_ID=$(mcp_seed_block "$SEED_TAG")
+if [ -z "$DECISION_ID" ]; then
+  echo "FAIL: could not mint a blocked decision to search for"
+  echo "      mcp_seed_block returned no decision_id for tag $SEED_TAG (it returns one only for a block)"
+  echo "      endpoint: $AXONFLOW_ENDPOINT"
+  exit 1
+fi
+echo "--- Seeded decision_id: $DECISION_ID ---"
 sleep 2
 
-DIRECT_HITS=$(curl -s -X POST \
-  -H "Authorization: Basic $(printf 'demo-client:demo-secret' | base64)" \
-  -H "Content-Type: application/json" \
-  -d '{"limit":50}' \
-  "$AXONFLOW_ENDPOINT/api/v1/audit/search" \
-  | jq --arg m "$MARKER" '[.entries[] | select((.query // "") | contains($m))] | length' 2>/dev/null)
+# The seeded decision, found directly through the same tool the agent will call.
+DIRECT_HITS=$(mcp_tool_call search_audit_events '{"limit":50}' \
+  | jq -r '.result.content[0].text // ""' \
+  | jq --arg d "$DECISION_ID" '[.entries[]? | select(.policy_details.decision_id == $d or .id == ("audit_" + $d))] | length' 2>/dev/null)
 if [ "${DIRECT_HITS:-0}" -lt 1 ]; then
   # Previously "SKIP:" + exit 0 (#87): success reported for precisely the
   # condition that makes the rest of this suite meaningless. If the seeded
-  # marker never reaches the audit log, the agent-driven search below has
+  # decision never reaches the audit log, the agent-driven search below has
   # nothing to find, and a green result would say the audit trail works when
   # it does not.
-  echo "FAIL: the seeded marker never landed in the audit log"
-  echo "      marker:   $MARKER"
-  echo "      endpoint: $AXONFLOW_ENDPOINT"
+  echo "FAIL: the seeded decision never landed in the audit log"
+  echo "      decision_id: $DECISION_ID"
+  echo "      endpoint:    $AXONFLOW_ENDPOINT"
   echo ""
-  echo "      The direct POST /api/v1/audit/search returned no entry containing"
-  echo "      it, so the audit write path is broken, the search path is broken,"
-  echo "      or the pattern catalogue no longer matches the seed statement."
-  echo "      Any of those is a finding; none is a reason to exit 0."
+  echo "      search_audit_events (limit 50) returned no entry for it, so the audit"
+  echo "      write path or the search path is broken. Either is a finding; neither"
+  echo "      is a reason to exit 0."
   exit 1
 fi
+echo "--- search_audit_events finds the seeded decision directly ($DIRECT_HITS entry) ---"
 
-PROMPT="Call the mcp__${MCP_SERVER_NAME}__search_audit_events tool with limit=50 to fetch recent audit events. Then find any entry whose query field contains the substring '$MARKER' and report it. Output exactly the literal text SMOKE_RESULT: followed by a single-line JSON like SMOKE_RESULT: {\"marker_found\":true,\"audit_id\":\"...\"} if found, or SMOKE_RESULT: {\"marker_found\":false} if not."
+PROMPT="Call the mcp__${MCP_SERVER_NAME}__search_audit_events tool with limit=50 to fetch recent audit events. Find the entry whose policy_details.decision_id is \"$DECISION_ID\" and report it. Output exactly the literal text SMOKE_RESULT: followed by a single-line JSON: SMOKE_RESULT: {\"decision_found\":<true or false>,\"decision_id\":\"<the decision_id of the entry you found, or empty>\",\"policy_decision\":\"<that entry's policy_decision, or empty>\"}."
 
 OUTPUT_FILE=$(mktemp -t axonflow-codex-audit.XXXXXX)
 trap 'codex_cleanup_mcp; rm -f "$OUTPUT_FILE"' EXIT
@@ -81,11 +86,21 @@ else
   errors=$((errors + 1))
 fi
 
-if assert_output_contains "$OUTPUT_FILE" '"marker_found":true'; then
-  echo "PASS: agent's audit-search returned the marker we seeded — outcome verified"
+SMOKE_LINE=$(smoke_line "$OUTPUT_FILE")
+FOUND=$(printf '%s' "$SMOKE_LINE" | jq -r '.decision_found // empty' 2>/dev/null)
+FOUND_ID=$(printf '%s' "$SMOKE_LINE" | jq -r '.decision_id // empty' 2>/dev/null)
+FOUND_DECISION=$(printf '%s' "$SMOKE_LINE" | jq -r '.policy_decision // empty' 2>/dev/null)
+if [ "$FOUND" = "true" ] && [ "$FOUND_ID" = "$DECISION_ID" ]; then
+  echo "PASS: the agent's audit search found the seeded decision ($FOUND_ID, $FOUND_DECISION) — outcome verified"
 else
   tail -10 "$OUTPUT_FILE" | sed 's/^/      /'
-  echo "FAIL: agent did NOT find the seeded marker"
+  echo "FAIL: the agent did NOT report the seeded decision (SMOKE_RESULT: ${SMOKE_LINE:-none})"
+  errors=$((errors + 1))
+fi
+if [ "$FOUND_DECISION" = "blocked" ]; then
+  echo "PASS: the agent reports the seeded decision as blocked"
+else
+  echo "FAIL: the agent reports policy_decision '${FOUND_DECISION}' for the seeded block"
   errors=$((errors + 1))
 fi
 
@@ -95,4 +110,4 @@ if [ "$errors" -gt 0 ]; then
   exit 1
 fi
 echo ""
-echo "PASS: audit-search outcome — Codex agent found a real marker event end-to-end"
+echo "PASS: audit-search outcome — Codex agent found a real seeded decision end-to-end"

@@ -168,6 +168,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
         args = params.get('arguments', {})
         statement = args.get('statement', '')
 
+        # HTTP-status triggers: the answer arrives with this status and body,
+        # for the pre hook (statement) and the post hook (message) alike. The
+        # fire-and-forget audit call is left alone so its request cannot
+        # disturb the check under test.
+        http_triggers = [
+            ('HTTP_401_JSONRPC', 401, 'application/json', json.dumps({'jsonrpc': '2.0', 'id': body.get('id'), 'error': {'code': -32001, 'message': 'Authentication failed'}})),
+            ('HTTP_401_PLAIN', 401, 'application/json', json.dumps({'error': 'invalid client credentials'})),
+            ('HTTP_429_PLAIN', 429, 'application/json', json.dumps({'error': 'too many requests'})),
+            ('HTTP_503_PLAIN', 503, 'application/json', json.dumps({'error': 'service unavailable'})),
+            ('HTTP_502_HTML', 502, 'text/html', '<html><body>502 Bad Gateway</body></html>'),
+            ('HTTP_403_PLAIN', 403, 'application/json', json.dumps({'error': 'proxy authentication required'})),
+            ('HTTP_404_PLAIN', 404, 'text/plain', '404 page not found'),
+            ('HTTP_403_DECISION', 403, 'application/json', json.dumps({'jsonrpc': '2.0', 'id': body.get('id'), 'result': {'content': [{'type': 'text', 'text': json.dumps({'allowed': False, 'block_reason': 'Decision carried on a 403', 'policies_evaluated': 3})}]}})),
+            ('HTTP_200_EMPTY', 200, 'application/json', ''),
+            ('HTTP_200_NOT_JSON', 200, 'text/plain', 'ok'),
+        ]
+        probe = statement + ' ' + str(args.get('message', ''))
+        if tool_name != 'audit_tool_call':
+            for trig, code, ctype, payload in http_triggers:
+                if trig in probe:
+                    self.send_response(code)
+                    self.send_header('Content-Type', ctype)
+                    self.end_headers()
+                    self.wfile.write(payload.encode())
+                    return
+
         # Simulate different responses based on statement content.
         # New in v0.2.1: additional trigger strings for the v0.2.0 decision
         # matrix that went untested — see tests/test-hooks.sh comments on
@@ -506,20 +532,165 @@ else
 fi
 
 echo ""
-echo "--- PreToolUse: auth_failure throttle active, no user token → exit 0 (unchanged) ---"
+echo "--- PreToolUse: auth_failure cooldown active → exit 2 with or without a user token, locally ---"
+# A 401 stamps the auth_failure cooldown, and a rejected credential never lets
+# a tool call run: the cooldown blocks. The endpoint is a port nothing listens
+# on, so the block cannot have come from the network.
 if [ "${1:-}" = "--live" ]; then
     echo "  SKIP: mock-only trigger"
     ((PASS++)) || true
 else
-    TMP_CAP=$(mktemp -d -t axonflow-authhr.XXXXXX)
-    mkdir -p "$TMP_CAP/axonflow"
-    echo "$(( $(date -u +%s) + 600 )) auth_failure" > "$TMP_CAP/axonflow/throttle-until"
+    for token_state in unset set; do
+        TMP_CAP=$(mktemp -d -t axonflow-authhr.XXXXXX)
+        mkdir -p "$TMP_CAP/axonflow"
+        echo "$(( $(date -u +%s) + 600 )) auth_failure" > "$TMP_CAP/axonflow/throttle-until"
+        if [ "$token_state" = "set" ]; then
+            TOKEN_ENV=(AXONFLOW_USER_TOKEN=ut-test-token)
+        else
+            TOKEN_ENV=(-u AXONFLOW_USER_TOKEN)
+        fi
+        set +e
+        echo '{"tool_name":"Bash","tool_input":{"command":"echo hi"}}' | env "${TOKEN_ENV[@]}" AXONFLOW_ENDPOINT="http://127.0.0.1:19999" XDG_CACHE_HOME="$TMP_CAP" "$PRE_HOOK" >/dev/null 2>"$TMP_CAP/stderr"
+        EXIT_CODE=$?
+        set -e
+        assert_eq "Exit code is 2 during the 401 cooldown (user token $token_state)" "2" "$EXIT_CODE"
+        assert_contains "Names the rejected credential and the cooldown (user token $token_state)" "$(cat "$TMP_CAP/stderr")" "rejected authentication (HTTP 401) and an auth-failure cooldown is active"
+        if [ "$token_state" = "set" ]; then
+            assert_contains "Names the per-user token as a likely cause" "$(cat "$TMP_CAP/stderr")" "per-user token is configured"
+        fi
+        rm -rf "$TMP_CAP"
+    done
+fi
+
+# One leg per row of the failure posture in pre-tool-check.sh's header, for the
+# answers that are not a policy decision. Each run gets its own cache dir: a 401
+# stamps the auth_failure cooldown, which would block every later leg.
+run_pre() {  # run_pre <command text> [env options and NAME=VALUE ...]
+    local cmd="$1"; shift
+    CACHE_DIR=$(mktemp -d -t axonflow-posture.XXXXXX)
     set +e
-    echo '{"tool_name":"Bash","tool_input":{"command":"echo hi"}}' | env -u AXONFLOW_USER_TOKEN XDG_CACHE_HOME="$TMP_CAP" "$PRE_HOOK" >/dev/null 2>"$TMP_CAP/stderr"
+    jq -nc --arg c "$cmd" '{tool_name: "Bash", tool_input: {command: $c}}' | \
+        env "$@" XDG_CACHE_HOME="$CACHE_DIR" "$PRE_HOOK" >"$CACHE_DIR/stdout" 2>"$CACHE_DIR/stderr"
     EXIT_CODE=$?
     set -e
-    assert_eq "Exit code is 0 during the 401 pause" "0" "$EXIT_CODE"
-    rm -rf "$TMP_CAP"
+    STDOUT_OUT=$(cat "$CACHE_DIR/stdout")
+    STDERR_OUT=$(cat "$CACHE_DIR/stderr")
+}
+
+echo ""
+echo "--- PreToolUse: the status-to-posture table (answers without a decision) ---"
+if [ "${1:-}" = "--live" ]; then
+    echo "  SKIP: mock-only triggers"
+    ((PASS++)) || true
+else
+    # 401: blocked, with or without a per-user token, and the cooldown stamped.
+    run_pre "HTTP_401_PLAIN test" -u AXONFLOW_USER_TOKEN
+    assert_eq "plain 401, no user token → exit 2" "2" "$EXIT_CODE"
+    assert_contains "plain 401 names the credential and the platform's text" "$STDERR_OUT" "rejected authentication (HTTP 401: invalid client credentials)"
+    assert_contains "plain 401 stamps the auth_failure cooldown" "$(cat "$CACHE_DIR/axonflow/throttle-until" 2>/dev/null)" "auth_failure"
+    rm -rf "$CACHE_DIR"
+    run_pre "HTTP_401_PLAIN test" AXONFLOW_USER_TOKEN=ut-test-token
+    assert_eq "plain 401, user token set → exit 2" "2" "$EXIT_CODE"
+    assert_contains "plain 401 with a user token names it" "$STDERR_OUT" "per-user token is configured"
+    rm -rf "$CACHE_DIR"
+    run_pre "HTTP_401_JSONRPC test" -u AXONFLOW_USER_TOKEN
+    assert_eq "401 carrying JSON-RPC -32001 → exit 2" "2" "$EXIT_CODE"
+    assert_contains "401 -32001 names the platform's text" "$STDERR_OUT" "rejected authentication (HTTP 401: Authentication failed)"
+    rm -rf "$CACHE_DIR"
+
+    # 429 without the Free-tier envelope: blocked with the limit named.
+    run_pre "HTTP_429_PLAIN test"
+    assert_eq "429 without an envelope → exit 2" "2" "$EXIT_CODE"
+    assert_contains "429 names the request limit and the platform's text" "$STDERR_OUT" "answered HTTP 429 (a request limit was reached: too many requests)"
+    rm -rf "$CACHE_DIR"
+
+    # Another 4xx without a decision body: blocked as the agent's refusal.
+    run_pre "HTTP_403_PLAIN test"
+    assert_eq "403 without a decision body → exit 2" "2" "$EXIT_CODE"
+    assert_contains "403 names the refusal and the platform's text" "$STDERR_OUT" "refused the request (HTTP 403: proxy authentication required)"
+    rm -rf "$CACHE_DIR"
+    run_pre "HTTP_404_PLAIN test"
+    assert_eq "404 without a decision body → exit 2" "2" "$EXIT_CODE"
+    assert_contains "404 names the refusal" "$STDERR_OUT" "refused the request (HTTP 404)"
+    rm -rf "$CACHE_DIR"
+
+    # A 4xx that CARRIES a decision is the platform's answer: the decision path.
+    run_pre "HTTP_403_DECISION test"
+    assert_eq "403 carrying a policy deny → exit 2 (the decision)" "2" "$EXIT_CODE"
+    assert_contains "403 carrying a deny is reported as the policy violation" "$STDERR_OUT" "AxonFlow policy violation: Decision carried on a 403"
+    if echo "$STDERR_OUT" | grep -q "refused the request"; then
+        echo "  FAIL: a 403 carrying a decision was reported as a refused request"
+        ((FAIL++)) || true
+    else
+        echo "  PASS: a 403 carrying a decision is not reported as a refused request"
+        ((PASS++)) || true
+    fi
+    rm -rf "$CACHE_DIR"
+
+    # No usable answer: runs with a notice by default, blocks under closed.
+    for trig in HTTP_503_PLAIN HTTP_502_HTML FAIL_OPEN_5XX HTTP_200_EMPTY HTTP_200_NOT_JSON; do
+        run_pre "$trig test"
+        assert_eq "$trig → exit 0 (AXONFLOW_FAIL_MODE unset)" "0" "$EXIT_CODE"
+        assert_empty "$trig → nothing on stdout" "$STDOUT_OUT"
+        assert_contains "$trig → the GOVERNANCE UNAVAILABLE notice" "$STDERR_OUT" "GOVERNANCE UNAVAILABLE"
+        assert_contains "$trig → the notice says the call runs ungoverned" "$STDERR_OUT" "This tool call runs UNGOVERNED"
+        rm -rf "$CACHE_DIR"
+        run_pre "$trig test" AXONFLOW_FAIL_MODE=closed
+        assert_eq "$trig → exit 2 under AXONFLOW_FAIL_MODE=closed" "2" "$EXIT_CODE"
+        assert_contains "$trig → the block names the switch" "$STDERR_OUT" "AXONFLOW_FAIL_MODE is \"closed\""
+        rm -rf "$CACHE_DIR"
+    done
+    run_pre "HTTP_503_PLAIN test"
+    assert_contains "503 notice names the status and the platform's text" "$STDERR_OUT" "answered HTTP 503 (service unavailable)"
+    rm -rf "$CACHE_DIR"
+    run_pre "HTTP_200_EMPTY test"
+    assert_contains "empty body notice names it" "$STDERR_OUT" "answered HTTP 200 with an empty body"
+    rm -rf "$CACHE_DIR"
+
+    # The switch: "open" in any case runs; any other value blocks.
+    run_pre "HTTP_503_PLAIN test" AXONFLOW_FAIL_MODE=OPEN
+    assert_eq "AXONFLOW_FAIL_MODE=OPEN (upper case) → exit 0" "0" "$EXIT_CODE"
+    rm -rf "$CACHE_DIR"
+    run_pre "HTTP_503_PLAIN test" AXONFLOW_FAIL_MODE=clsoed
+    assert_eq "AXONFLOW_FAIL_MODE=clsoed (a typo) → exit 2" "2" "$EXIT_CODE"
+    rm -rf "$CACHE_DIR"
+
+    # The switch never loosens a refusal.
+    run_pre "HTTP_401_PLAIN test" -u AXONFLOW_USER_TOKEN AXONFLOW_FAIL_MODE=open
+    assert_eq "401 under AXONFLOW_FAIL_MODE=open → still exit 2" "2" "$EXIT_CODE"
+    rm -rf "$CACHE_DIR"
+    run_pre "HTTP_429_PLAIN test" AXONFLOW_FAIL_MODE=open
+    assert_eq "429 under AXONFLOW_FAIL_MODE=open → still exit 2" "2" "$EXIT_CODE"
+    rm -rf "$CACHE_DIR"
+
+    # Unreachable: the notice by default, a block under closed.
+    run_pre "echo test" AXONFLOW_ENDPOINT=http://127.0.0.1:19999
+    assert_eq "unreachable → exit 0" "0" "$EXIT_CODE"
+    assert_contains "unreachable → the notice names the endpoint" "$STDERR_OUT" "could not be reached (curl exit"
+    rm -rf "$CACHE_DIR"
+    run_pre "echo test" AXONFLOW_ENDPOINT=http://127.0.0.1:19999 AXONFLOW_FAIL_MODE=closed
+    assert_eq "unreachable under AXONFLOW_FAIL_MODE=closed → exit 2" "2" "$EXIT_CODE"
+    rm -rf "$CACHE_DIR"
+
+    # A missing tool is named. PATH holds only what the hook needs before its
+    # dependency check (bash, tr) plus the one tool that is present.
+    for missing in jq curl; do
+        SHIM=$(mktemp -d -t axonflow-shim.XXXXXX)
+        for tool in bash tr jq curl; do
+            if [ "$tool" != "$missing" ]; then ln -s "$(command -v "$tool")" "$SHIM/$tool"; fi
+        done
+        CACHE_DIR=$(mktemp -d -t axonflow-posture.XXXXXX)
+        set +e
+        echo '{"tool_name":"Bash","tool_input":{"command":"echo hi"}}' | env PATH="$SHIM" XDG_CACHE_HOME="$CACHE_DIR" "$PRE_HOOK" >/dev/null 2>"$CACHE_DIR/stderr"
+        EXIT_CODE=$?
+        echo '{"tool_name":"Bash","tool_input":{"command":"echo hi"}}' | env PATH="$SHIM" AXONFLOW_FAIL_MODE=closed XDG_CACHE_HOME="$CACHE_DIR" "$PRE_HOOK" >/dev/null 2>"$CACHE_DIR/stderr-closed"
+        EXIT_CLOSED=$?
+        set -e
+        assert_eq "$missing missing → exit 0" "0" "$EXIT_CODE"
+        assert_contains "$missing missing → the notice names it" "$(cat "$CACHE_DIR/stderr")" "needs $missing, which is not installed"
+        assert_eq "$missing missing under AXONFLOW_FAIL_MODE=closed → exit 2" "2" "$EXIT_CLOSED"
+        rm -rf "$SHIM" "$CACHE_DIR"
+    done
 fi
 
 echo ""
@@ -623,6 +794,74 @@ echo "--- PostToolUse: failed tool → still audits silently ---"
 OUTPUT=$(echo '{"tool_name":"Bash","tool_input":{"command":"false"},"tool_response":{"stdout":"","stderr":"error","exitCode":1}}' | "$POST_HOOK" 2>/dev/null)
 EXIT_CODE=$?
 assert_eq "Exit code is 0 (never blocks)" "0" "$EXIT_CODE"
+
+# The same table on the PostToolUse side, which never blocks: an answer that
+# refused the check raises a governance alert; no usable answer prints a notice
+# (AXONFLOW_FAIL_MODE unset) or raises the alert (closed).
+run_post() {  # run_post <tool stdout text> [env options and NAME=VALUE ...]
+    local text="$1"; shift
+    CACHE_DIR=$(mktemp -d -t axonflow-postposture.XXXXXX)
+    set +e
+    jq -nc --arg o "$text" '{tool_name: "Bash", tool_input: {command: "cat data"}, tool_response: {stdout: $o, exitCode: 0}}' | \
+        env "$@" XDG_CACHE_HOME="$CACHE_DIR" "$POST_HOOK" >"$CACHE_DIR/stdout" 2>"$CACHE_DIR/stderr"
+    EXIT_CODE=$?
+    set -e
+    STDOUT_OUT=$(cat "$CACHE_DIR/stdout")
+    STDERR_OUT=$(cat "$CACHE_DIR/stderr")
+}
+
+echo ""
+echo "--- PostToolUse: the status-to-posture table (alert or notice; never a block) ---"
+if [ "${1:-}" = "--live" ]; then
+    echo "  SKIP: mock-only triggers"
+    ((PASS++)) || true
+else
+    for trig in HTTP_401_PLAIN HTTP_401_JSONRPC; do
+        run_post "$trig output" -u AXONFLOW_USER_TOKEN
+        assert_eq "post $trig → exit 0" "0" "$EXIT_CODE"
+        assert_contains "post $trig → the alert names the rejected credential" "$STDOUT_OUT" "rejected authentication, HTTP 401"
+        assert_contains "post $trig → the auth_failure cooldown is stamped" "$(cat "$CACHE_DIR/axonflow/throttle-until" 2>/dev/null)" "auth_failure"
+        rm -rf "$CACHE_DIR"
+    done
+
+    CACHE_DIR=$(mktemp -d -t axonflow-postposture.XXXXXX)
+    mkdir -p "$CACHE_DIR/axonflow"
+    echo "$(( $(date -u +%s) + 600 )) auth_failure" > "$CACHE_DIR/axonflow/throttle-until"
+    set +e
+    OUT=$(echo '{"tool_name":"Bash","tool_input":{"command":"cat data"},"tool_response":{"stdout":"x","exitCode":0}}' | \
+        env AXONFLOW_ENDPOINT=http://127.0.0.1:19999 XDG_CACHE_HOME="$CACHE_DIR" "$POST_HOOK" 2>/dev/null)
+    EXIT_CODE=$?
+    set -e
+    assert_eq "post during the 401 cooldown → exit 0" "0" "$EXIT_CODE"
+    assert_contains "post during the 401 cooldown → the alert, with no network call" "$OUT" "rejected authentication, HTTP 401"
+    rm -rf "$CACHE_DIR"
+
+    run_post "HTTP_429_PLAIN output"
+    assert_contains "post 429 → the alert names the limit" "$STDOUT_OUT" "answered HTTP 429, a request limit: too many requests"
+    rm -rf "$CACHE_DIR"
+    run_post "HTTP_403_PLAIN output"
+    assert_contains "post 403 without a decision → the alert names the refusal" "$STDOUT_OUT" "refused the request, HTTP 403: proxy authentication required"
+    rm -rf "$CACHE_DIR"
+
+    for trig in HTTP_503_PLAIN HTTP_502_HTML HTTP_200_EMPTY HTTP_200_NOT_JSON; do
+        run_post "$trig output"
+        assert_eq "post $trig → exit 0" "0" "$EXIT_CODE"
+        assert_empty "post $trig → no alert on stdout (AXONFLOW_FAIL_MODE unset)" "$STDOUT_OUT"
+        assert_contains "post $trig → the notice says the output was not checked" "$STDERR_OUT" "This tool output was NOT checked"
+        rm -rf "$CACHE_DIR"
+        run_post "$trig output" AXONFLOW_FAIL_MODE=closed
+        assert_contains "post $trig → the alert under AXONFLOW_FAIL_MODE=closed" "$STDOUT_OUT" "could not check this tool output"
+        rm -rf "$CACHE_DIR"
+    done
+
+    run_post "some output" AXONFLOW_ENDPOINT=http://127.0.0.1:19999
+    assert_empty "post unreachable → no alert (AXONFLOW_FAIL_MODE unset)" "$STDOUT_OUT"
+    assert_contains "post unreachable → the notice names the endpoint" "$STDERR_OUT" "could not be reached (curl exit"
+    rm -rf "$CACHE_DIR"
+    run_post "some output" AXONFLOW_ENDPOINT=http://127.0.0.1:19999 AXONFLOW_FAIL_MODE=closed
+    assert_contains "post unreachable under AXONFLOW_FAIL_MODE=closed → the alert" "$STDOUT_OUT" "could not check this tool output"
+    rm -rf "$CACHE_DIR"
+fi
 
 # ============================================================
 # Telemetry Tests (v0.3.0)

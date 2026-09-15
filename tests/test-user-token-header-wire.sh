@@ -17,9 +17,9 @@
 #
 # Also pins the #2944 fail-closed contract: with a token configured, an
 # HTTP 401 from the agent → exit 2 + a stderr diagnostic naming the per-user
-# token (never its value); unconfigured 401 keeps the pre-existing #2275
-# cooldown fall-open (exit 0). And pins that the hooks NEVER leak the token
-# value to stdout or stderr.
+# token (never its value); an unconfigured 401 is blocked too (exit 2), with a
+# diagnostic that names the credential and no per-user token. And pins that the
+# hooks NEVER leak the token value to stdout or stderr.
 #
 # Stdlib-only (bash + python3 + jq).
 
@@ -285,8 +285,8 @@ else
 fi
 
 # --- #2944 fail-closed: token configured + agent 401/-32001 → exit 2 with a
-# diagnostic naming the per-user token; NO value leak. Unconfigured 401 keeps
-# the pre-existing #2275 cooldown fall-open (exit 0). ---
+# diagnostic naming the per-user token; NO value leak. An unconfigured 401 is
+# blocked too (last leg). ---
 start_server 0 1
 : > "$CAP"
 run_hook "$PRE_HOOK" env
@@ -321,13 +321,21 @@ else
   fail "cooldown behavior wrong: exit=$SECOND_EXIT new-requests=$(( $(captured_count) - BEFORE_COUNT ))"
 fi
 
-# Unconfigured 401 → unchanged #2275 contract: cooldown stamped, exit 0.
+# Unconfigured 401 → blocked as well (the #2275 cooldown is still stamped): a
+# rejected credential never lets a tool call run, with or without a per-user
+# token (plugin issue #96). The diagnostic names the credential, and no per-user
+# token, because none is configured.
 : > "$CAP"
 run_hook "$PRE_HOOK" none
-if [ "$HOOK_EXIT" -eq 0 ]; then
-  pass "401 with NO token configured keeps the pre-existing cooldown fall-open (exit 0)"
+if [ "$HOOK_EXIT" -eq 2 ] && grep -q "rejected authentication (HTTP 401" "$HOOK_STDERR"; then
+  pass "401 with NO token configured → exit 2 with the rejected-credential diagnostic (fail-closed)"
 else
-  fail "unconfigured 401 exited $HOOK_EXIT (expected 0 — behavior change for unconfigured users!)"
+  fail "unconfigured 401 exited $HOOK_EXIT (expected 2, fail-closed): $(cat "$HOOK_STDERR")"
+fi
+if grep -q "per-user token" "$HOOK_STDERR"; then
+  fail "unconfigured 401 diagnostic names a per-user token that is not configured"
+else
+  pass "unconfigured 401 diagnostic does not name a per-user token"
 fi
 
 echo ""
