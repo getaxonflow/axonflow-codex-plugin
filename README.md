@@ -319,13 +319,14 @@ export AXONFLOW_USER_TOKEN=<token minted by your org admin>
 
 | AxonFlow's answer | PreToolUse (`exec_command`) | PostToolUse (never blocks) |
 |---|---|---|
-| A policy decision (a JSON-RPC result, whatever the HTTP status) | enforced: a deny blocks (exit 2) | a deny or a redaction reaches Codex as a governance alert |
-| A rejected credential: HTTP 401, JSON-RPC `-32001`, or the cooldown a 401 starts (5 minutes) | **blocked** (exit 2), with or without a per-user token | governance alert: do not use the output |
+| A policy decision (a JSON-RPC result, on any HTTP status but 401 and 429) | enforced: a deny blocks (exit 2) | a deny or a redaction reaches Codex as a governance alert |
+| A rejected credential: HTTP 401, JSON-RPC `-32001`, or the cooldown a 401 starts (300 seconds unless `AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS` says otherwise) | **blocked** (exit 2), with or without a per-user token | governance alert: do not use the output |
 | A request limit: HTTP 429, or a Free-tier limit | **blocked** (exit 2) | governance alert |
-| Another 4xx without a decision body, or a JSON-RPC error other than `-32603` / `-32700` (endpoint, credential or configuration) | **blocked** (exit 2) | governance alert |
-| No usable answer: unreachable, timeout, 5xx, JSON-RPC `-32603` / `-32700`, an empty or unreadable body, `jq` or `curl` missing | `AXONFLOW_FAIL_MODE=open` (the default): runs **ungoverned**, with a `GOVERNANCE UNAVAILABLE` notice on stderr. `AXONFLOW_FAIL_MODE=closed`: **blocked** (exit 2) | `open`: the output passes, with the notice. `closed`: governance alert |
+| A refusal (endpoint, credential or configuration): a 3xx redirect, a 4xx other than 408 without a JSON-RPC answer (a 413 names the size limit), or a JSON-RPC error other than `-32603` / `-32700`, with or without a message or a code | **blocked** (exit 2) | governance alert |
+| The check request for this call could not be built | **blocked** (exit 2) | governance alert |
+| No usable answer: unreachable, timeout, HTTP 408, 5xx, JSON-RPC `-32603` / `-32700`, an empty or unreadable body, `jq` or `curl` missing | `AXONFLOW_FAIL_MODE` unset, empty or `open` (the default): runs **ungoverned**, with a `GOVERNANCE UNAVAILABLE` notice on stderr. Any other value, such as `closed`: **blocked** (exit 2) | `open`: the output passes, with the notice. Otherwise: governance alert |
 
-`AXONFLOW_FAIL_MODE` decides only the last row: a rejected credential, a limit and a policy deny block whatever it says. Any value other than `open` (in any case) blocks. The 401 cooldown spares the agent a retry storm; it never lets a tool call run.
+`AXONFLOW_FAIL_MODE` decides only the last row: a rejected credential, a limit, a refusal and a policy deny block whatever it says. Unset, empty or `open` (in any case) runs; any other value blocks. The 401 cooldown spares the agent a retry storm; it never lets a tool call run. While it holds, the block names the seconds left and its stamp file (`throttle-until` in the AxonFlow cache directory, which every AxonFlow plugin using that directory writes); after fixing the credential, delete that file to retry at once. The platform's own words in a block or an alert are quoted as the platform's, with control characters removed.
 
 ### Per-user authorization token (`AXONFLOW_USER_TOKEN`)
 

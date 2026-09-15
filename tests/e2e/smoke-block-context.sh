@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # Plugin smoke E2E: install-and-use sanity check against a live AxonFlow
-# stack. Feeds a SQLi-bearing Bash tool invocation into pre-tool-check.sh
-# and asserts the hook exits 2 with stderr containing the Codex deny
-# prefix and Plugin Batch 1 richer-context markers.
+# stack. Feeds a destructive Bash command into pre-tool-check.sh and asserts
+# the hook exits 2 with stderr containing the Codex deny prefix and the
+# decision id.
+#
+# The command is `rm -rf / --no-preserve-root`, which the shipped
+# sys_dangerous_destructive_fs control blocks. A SQL injection string is not
+# used: from AxonFlow v11.0.0 it is allowed everywhere but /api/request
+# (getaxonflow/axonflow-enterprise#4230). No risk marker is asserted either:
+# from v11.0.0 a deny carries no risk_level, so the hook prints none.
 #
 # Scope: smoke-only — install wiring + one local deny UX. The full
-# install-and-use matrix (explain, override lifecycle, audit filter
-# parity, cache invalidation) lives alongside the platform in
+# install-and-use matrix (explain, audit filter parity, cache invalidation)
+# lives alongside the platform in
 # axonflow-enterprise/tests/e2e/plugin-batch-1/codex-install/.
 #
 # Usage:
@@ -38,7 +44,7 @@ if ! curl -sSf -o /dev/null --max-time 5 "$AXONFLOW_ENDPOINT/health"; then
   exit 0
 fi
 
-INPUT='{"tool_name":"Bash","tool_input":{"command":"psql -c \"SELECT * FROM users WHERE id='"'"'1'"'"' OR 1=1--\""}}'
+INPUT='{"tool_name":"Bash","tool_input":{"command":"rm -rf / --no-preserve-root"}}'
 
 STDERR_OUT=$(echo "$INPUT" | bash "$HOOK_SCRIPT" 2>&1 >/dev/null)
 EXIT_CODE=$?
@@ -60,13 +66,9 @@ if ! echo "$STDERR_OUT" | grep -qE "decision:"; then
   echo "FAIL: stderr missing 'decision:' marker (Plugin Batch 1 richer context)"
   errors=$((errors + 1))
 fi
-if ! echo "$STDERR_OUT" | grep -qE "risk:"; then
-  echo "FAIL: stderr missing 'risk:' marker (Plugin Batch 1 richer context)"
-  errors=$((errors + 1))
-fi
 
 if [ $errors -gt 0 ]; then
   echo "FAIL: smoke scenario failed with $errors error(s)"
   exit 1
 fi
-echo "PASS: smoke — Codex hook denies SQLi Bash with exit 2 + richer context"
+echo "PASS: smoke — Codex hook denies a destructive Bash command with exit 2 + the decision id"

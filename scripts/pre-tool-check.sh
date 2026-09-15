@@ -10,16 +10,32 @@
 #   Exit 2 = block (tool execution prevented)
 #   Other non-zero = non-blocking error (tool proceeds)
 #
-# Failure posture, one row per answer:
-#   A policy decision (a JSON-RPC result or   -> enforced as the platform decided;
-#   error), whatever the HTTP status             a deny is exit 2
+# Failure posture, one row per answer (the status classes are read by
+# scripts/lib/failure-posture.sh, which post-tool-audit.sh reads too):
+#   A policy decision: a JSON-RPC result on   -> enforced as the platform decided;
+#   any status but 401 and 429                   a deny is exit 2
 #   HTTP 401, or the auth-failure cooldown    -> BLOCK (exit 2): a rejected credential
 #   HTTP 429, or a Free-tier limit            -> BLOCK (exit 2): a request limit
-#   Another 4xx WITHOUT a decision body       -> BLOCK (exit 2): the agent refused the
-#                                                request (endpoint, credential or configuration)
-#   No usable answer: unreachable, timeout,   -> AXONFLOW_FAIL_MODE decides: "open" (the
-#   5xx, JSON-RPC -32603 / -32700, an empty      default) runs the tool UNGOVERNED with a
-#   or unreadable body, jq or curl missing       notice on stderr; anything else blocks
+#   A JSON-RPC error other than -32603 /      -> BLOCK (exit 2): the agent refused the
+#   -32700 (or with no numeric code); a 3xx;     request (endpoint, credential or
+#   a 4xx other than 408 without a JSON-RPC      configuration); a 413 names the size
+#   answer
+#   The request for this tool call could not  -> BLOCK (exit 2): what governance would
+#   be built                                     check was never sent
+#   No usable answer: unreachable, timeout,   -> AXONFLOW_FAIL_MODE decides: unset, empty
+#   408, 5xx, JSON-RPC -32603 / -32700, an       or "open" runs the tool UNGOVERNED with a
+#   empty or unreadable body, jq or curl         notice on stderr; any other value blocks
+#   missing
+
+# The script's directory from builtins only: this runs before the dependency
+# check below, on a PATH that may hold nothing but bash.
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+if [ "$SCRIPT_DIR" = "${BASH_SOURCE[0]}" ]; then
+  SCRIPT_DIR="."
+fi
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
+# shellcheck source=./lib/failure-posture.sh
+. "${SCRIPT_DIR}/lib/failure-posture.sh"
 
 # Block the tool call with the reason on stderr and stop (exit 2 is the
 # hook's block).
@@ -29,13 +45,11 @@ axonflow_pre_deny() {
 }
 
 # A governed check that got no usable answer. AXONFLOW_FAIL_MODE decides:
-# "open" (the default, case-insensitive) lets the tool call run UNGOVERNED and
-# says so on stderr every time; any other value blocks it. It never applies to
-# an answer that refused the call (a 401, a 429, a policy deny): those block.
+# unset, empty or "open" (any case) lets the tool call run UNGOVERNED and says
+# so on stderr every time; any other value blocks it. It never applies to an
+# answer that refused the call (a 401, a 429, a policy deny): those block.
 axonflow_pre_ungoverned() {
-  local mode
-  mode=$(printf '%s' "${AXONFLOW_FAIL_MODE:-open}" | tr '[:upper:]' '[:lower:]')
-  if [ "$mode" != "open" ]; then
+  if ! axonflow_fail_mode_open; then
     axonflow_pre_deny "AxonFlow governance blocked: $1, and AXONFLOW_FAIL_MODE is \"${AXONFLOW_FAIL_MODE}\" (not \"open\"), so this tool call is blocked."
   fi
   echo "[AxonFlow] GOVERNANCE UNAVAILABLE: $1. This tool call runs UNGOVERNED. Set AXONFLOW_FAIL_MODE=closed to block tool calls when AxonFlow cannot answer." >&2
@@ -53,7 +67,6 @@ fi
 # Endpoint resolution per ADR-048: default to AxonFlow Community SaaS only when
 # the user has not set explicit config. Any user-supplied AXONFLOW_ENDPOINT or
 # AXONFLOW_AUTH is honoured untouched — no silent override.
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -z "${AXONFLOW_ENDPOINT:-}" ] && [ -z "${AXONFLOW_AUTH:-}" ]; then
   ENDPOINT="https://try.getaxonflow.com"
   AXONFLOW_MODE="community-saas"
@@ -238,7 +251,7 @@ fi
 #     cooldown only spares the platform the retry storm.
 if axonflow_throttle_active; then
   if [ "$(axonflow_throttle_reason)" = "auth_failure" ]; then
-    axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow agent rejected authentication (HTTP 401) and an auth-failure cooldown is active, so this tool call is blocked. ${AUTH_HINT}"
+    axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow agent rejected authentication (HTTP 401) and an auth-failure cooldown is active, so this tool call is blocked. $(axonflow_auth_cooldown_note) ${AUTH_HINT}"
   fi
   axonflow_pre_deny "$AXONFLOW_LIMIT_DENY_REASON"
 fi
@@ -248,18 +261,16 @@ fi
 # V1 Plugin Pro: capture HTTP status + headers + body separately so the
 # envelope handler can detect 429 / 403 and stamp the throttle deadline
 # before we fall through to the JSON-RPC parser.
+PRECHECK_REQUEST=$(mktemp)
 PRECHECK_BODY=$(mktemp)
 PRECHECK_HEADERS=$(mktemp)
-trap 'rm -f "$PRECHECK_BODY" "$PRECHECK_HEADERS"' EXIT
-HTTP_CODE=$(curl -sS --max-time "$REQUEST_TIMEOUT_SECONDS" \
-  -D "$PRECHECK_HEADERS" -o "$PRECHECK_BODY" -w '%{http_code}' \
-  -X POST "${ENDPOINT}/api/v1/mcp-server" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json" \
-  "${AUTH_HEADER[@]}" \
-  -d "$(jq -n \
-    --arg ct "$CONNECTOR_TYPE" \
-    --arg stmt "$STATEMENT" \
+trap 'rm -f "$PRECHECK_REQUEST" "$PRECHECK_BODY" "$PRECHECK_HEADERS"' EXIT
+
+# The statement reaches jq on stdin and the body reaches curl as a file, never
+# as a command-line argument: an argument has a size limit (about 128 KiB on
+# Linux), and the model chooses the command's length. If the request cannot be
+# built, what governance would check was never sent, and the call is blocked.
+if ! printf '%s' "$STATEMENT" | jq -Rsc --arg ct "$CONNECTOR_TYPE" \
     '{
       jsonrpc: "2.0",
       id: "hook-pre",
@@ -268,11 +279,21 @@ HTTP_CODE=$(curl -sS --max-time "$REQUEST_TIMEOUT_SECONDS" \
         name: "check_policy",
         arguments: {
           connector_type: $ct,
-          statement: $stmt,
+          statement: .,
           operation: "execute"
         }
       }
-    }')" 2>/dev/null)
+    }' > "$PRECHECK_REQUEST" 2>/dev/null || [ ! -s "$PRECHECK_REQUEST" ]; then
+  axonflow_pre_deny "AxonFlow governance blocked: the policy check request for this tool call could not be built, so the call was never checked and is blocked."
+fi
+
+HTTP_CODE=$(curl -sS --max-time "$REQUEST_TIMEOUT_SECONDS" \
+  -D "$PRECHECK_HEADERS" -o "$PRECHECK_BODY" -w '%{http_code}' \
+  -X POST "${ENDPOINT}/api/v1/mcp-server" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  "${AUTH_HEADER[@]}" \
+  --data-binary @"$PRECHECK_REQUEST" 2>/dev/null)
 CURL_EXIT=$?
 
 # Any curl-level failure (exit != 0) means no answer arrived — timeout, DNS
@@ -291,40 +312,41 @@ fi
 
 RESPONSE=$(cat "$PRECHECK_BODY")
 
-# The platform's own words for a refusal, bounded: a JSON-RPC error message, a
-# coded error envelope's message, or a plain {"error": "..."} body. Empty for a
-# body that is not JSON (an HTML error page).
-PLATFORM_TEXT=$(printf '%s' "$RESPONSE" | jq -r 'if type == "object" then (.error.message? // (.error | strings?) // .message? // empty) else empty end' 2>/dev/null | tr '\n' ' ' | sed -e 's/[[:space:]]*$//' | cut -c1-300)
+# The platform's own words for a refusal (a JSON-RPC error message, a coded
+# error envelope's message, or a plain {"error": "..."} body), with control
+# characters dropped and capped, quoted as the platform's: any proxy in the way
+# can write this text, and it reaches Codex and the model. Empty for a body
+# that is not JSON (an HTML error page).
+PLATFORM_TEXT=$(axonflow_platform_text "$RESPONSE")
+SAID="${PLATFORM_TEXT:+; AxonFlow said: \"$PLATFORM_TEXT\"}"
 
-# axonflow-enterprise#2275: a 401 stamps a 5-minute cooldown (the helper) so a
+# axonflow-enterprise#2275: a 401 stamps a cooldown (the helper; 300 seconds by default) so a
 # tight retry loop can't fire 716 × 401 in 24h, and the tool call is BLOCKED:
 # a rejected credential never lets a tool call run, with or without a per-user
 # token. The cooldown then blocks locally, with no network round-trip.
 if axonflow_handle_auth_failure "$HTTP_CODE" "$PRECHECK_BODY" "$PRECHECK_HEADERS"; then
-  axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow agent at ${ENDPOINT} rejected authentication (HTTP 401${PLATFORM_TEXT:+: $PLATFORM_TEXT}), so this tool call is blocked. ${AUTH_HINT}"
+  axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow agent at ${ENDPOINT} rejected authentication (HTTP 401${SAID}), so this tool call is blocked. $(axonflow_auth_cooldown_note) ${AUTH_HINT}"
 fi
 
-# The HTTP status of an answer the lines above did not settle. A body that is a
-# JSON-RPC answer (a result or an error) is the platform's answer whatever the
-# status, and goes on to the decision path below: a 403 carrying a policy deny
-# stays a policy deny. Only a body WITHOUT one is judged by its status.
-IS_JSONRPC=$(printf '%s' "$RESPONSE" | jq -r 'if type == "object" and has("jsonrpc") and (has("result") or has("error")) then "true" else "false" end' 2>/dev/null || echo "false")
-if [ "$HTTP_CODE" = "429" ]; then
-  axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow agent answered HTTP 429 (a request limit was reached${PLATFORM_TEXT:+: $PLATFORM_TEXT}), so this tool call is blocked until the limit resets."
-fi
-case "$HTTP_CODE" in
-  2??) ;;
+# The HTTP status of an answer the lines above did not settle, read by the
+# shared table (scripts/lib/failure-posture.sh). A body that is a JSON-RPC
+# answer (a non-null result, or an error object) is the platform's answer on
+# any status but 429, and goes on to the decision path below: a 403 carrying a
+# policy deny stays a policy deny. Only a body WITHOUT one is judged by status.
+IS_JSONRPC=$(axonflow_is_jsonrpc_answer "$RESPONSE")
+case "$(axonflow_status_class "$HTTP_CODE" "$IS_JSONRPC")" in
+  answer) ;;
+  limit)
+    axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow agent answered HTTP 429 (a request limit was reached${SAID}), so this tool call is blocked until the limit resets."
+    ;;
+  too_large)
+    axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow agent at ${ENDPOINT} refused the policy check as too large (HTTP 413${SAID}), so this tool call is blocked. The agent, or a proxy in front of it, limits the request size."
+    ;;
+  refused)
+    axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow agent at ${ENDPOINT} refused the request (HTTP ${HTTP_CODE}${SAID}), so this tool call is blocked. Check AXONFLOW_ENDPOINT (a redirect means the URL needs changing) and AXONFLOW_AUTH."
+    ;;
   *)
-    if [ "$IS_JSONRPC" != "true" ]; then
-      case "$HTTP_CODE" in
-        4??)
-          axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow agent at ${ENDPOINT} refused the request (HTTP ${HTTP_CODE}${PLATFORM_TEXT:+: $PLATFORM_TEXT}), so this tool call is blocked. Check AXONFLOW_ENDPOINT and AXONFLOW_AUTH."
-          ;;
-        *)
-          axonflow_pre_ungoverned "the AxonFlow agent answered HTTP ${HTTP_CODE}${PLATFORM_TEXT:+ ($PLATFORM_TEXT)}"
-          ;;
-      esac
-    fi
+    axonflow_pre_ungoverned "the AxonFlow agent answered HTTP ${HTTP_CODE}${SAID}"
     ;;
 esac
 
@@ -348,9 +370,10 @@ fi
 #   Parse errors (-32700):      no usable answer (AXONFLOW_FAIL_MODE)
 #   Internal errors (-32603):   no usable answer (AXONFLOW_FAIL_MODE)
 #   Everything else:            BLOCK — unknown code, fail closed (2026-09-14)
-JSONRPC_ERROR=$(echo "$RESPONSE" | jq -r '.error.message // empty' 2>/dev/null || echo "")
-if [ -n "$JSONRPC_ERROR" ]; then
-  JSONRPC_CODE=$(echo "$RESPONSE" | jq -r '.error.code // 0' 2>/dev/null || echo "0")
+#   An error with no numeric code, or no message, is still an error: it blocks.
+JSONRPC_CODE=$(axonflow_jsonrpc_error_code "$RESPONSE")
+if [ -n "$JSONRPC_CODE" ]; then
+  JSONRPC_ERROR="${PLATFORM_TEXT:-no message}"
   case "$JSONRPC_CODE" in
     -32001|-32601|-32602)
       # #2944: on the auth error (-32001), name a configured per-user token
@@ -361,15 +384,14 @@ if [ -n "$JSONRPC_ERROR" ]; then
       if [ "$JSONRPC_CODE" = "-32001" ] && [ -n "${AXONFLOW_USER_TOKEN:-}" ]; then
         HINT_SUFFIX=" ${USER_TOKEN_HINT}"
       fi
-      echo "AxonFlow governance blocked: ${JSONRPC_ERROR} (code ${JSONRPC_CODE}). Fix AxonFlow configuration to restore tool access.${HINT_SUFFIX}" >&2
-      exit 2
+      axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow agent refused the policy check (code ${JSONRPC_CODE}; AxonFlow said: \"${JSONRPC_ERROR}\"). Fix AxonFlow configuration to restore tool access.${HINT_SUFFIX}"
       ;;
     -32603|-32700)
-      axonflow_pre_ungoverned "the AxonFlow agent answered a server error (${JSONRPC_ERROR}, code ${JSONRPC_CODE})"
+      axonflow_pre_ungoverned "the AxonFlow agent answered a server error (code ${JSONRPC_CODE}; AxonFlow said: \"${JSONRPC_ERROR}\")"
       ;;
     *)
       # An unknown code is not a decision: fail closed (ruled 2026-09-14).
-      axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow agent answered an unexpected error (${JSONRPC_ERROR}, code ${JSONRPC_CODE}), so this tool call is blocked."
+      axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow agent answered an unexpected error (code ${JSONRPC_CODE}; AxonFlow said: \"${JSONRPC_ERROR}\"), so this tool call is blocked."
       ;;
   esac
 fi
@@ -395,14 +417,14 @@ if [ "$RESULT_IS_ERROR" = "true" ] || [ "$HAS_DECISION" != "true" ]; then
   if axonflow_handle_envelope_text "$TOOL_RESULT"; then
     axonflow_pre_deny "$AXONFLOW_LIMIT_DENY_REASON"
   fi
-  RESULT_ERROR=$(echo "$TOOL_RESULT" | jq -r '.error // empty' 2>/dev/null || echo "")
+  RESULT_ERROR=$(axonflow_clean_text "$(echo "$TOOL_RESULT" | jq -r '.error // empty' 2>/dev/null)")
   axonflow_pre_deny "AxonFlow governance blocked: ${RESULT_ERROR:-the AxonFlow agent returned a policy result without a decision}, so this tool call is blocked."
 fi
 
 # Note: jq's // operator treats false as falsy, so .allowed // true returns
 # true even when .allowed is false. Use explicit if/else instead.
 ALLOWED=$(echo "$TOOL_RESULT" | jq -r 'if .allowed == false then "false" else "true" end' 2>/dev/null || echo "true")
-BLOCK_REASON=$(echo "$TOOL_RESULT" | jq -r '.block_reason // empty' 2>/dev/null || echo "")
+BLOCK_REASON=$(axonflow_clean_text "$(echo "$TOOL_RESULT" | jq -r '.block_reason // empty' 2>/dev/null)")
 POLICIES_EVALUATED=$(echo "$TOOL_RESULT" | jq -r '.policies_evaluated // 0' 2>/dev/null || echo "0")
 
 # Plugin Batch 1 (ADR-042 + ADR-043): richer block context surfaced when
@@ -414,13 +436,8 @@ OVERRIDE_EXISTING_ID=$(echo "$TOOL_RESULT" | jq -r '.override_existing_id // emp
 
 if [ "$ALLOWED" = "false" ]; then
   # Record the blocked attempt in the audit trail (fire-and-forget)
-  curl -s --max-time "$REQUEST_TIMEOUT_SECONDS" -X POST "${ENDPOINT}/api/v1/mcp-server" \
-    -H "Content-Type: application/json" \
-    -H "Accept: application/json" \
-    "${AUTH_HEADER[@]}" \
-    -d "$(jq -n \
+  printf '%s' "$STATEMENT" | jq -Rsc \
       --arg tn "$TOOL_NAME" \
-      --arg stmt "$STATEMENT" \
       --arg reason "$BLOCK_REASON" \
       --arg policies "$POLICIES_EVALUATED" \
       '{
@@ -433,13 +450,17 @@ if [ "$ALLOWED" = "false" ]; then
             tool_name: $tn,
             caller_name: "codex",
             tool_type: "codex",
-            input: {statement: $stmt},
+            input: {statement: .},
             output: {policy_decision: "blocked", block_reason: $reason, policies_evaluated: $policies},
             success: false,
             error_message: ("Blocked by policy: " + $reason)
           }
         }
-      }')" > /dev/null 2>&1 &
+      }' 2>/dev/null | curl -s --max-time "$REQUEST_TIMEOUT_SECONDS" -X POST "${ENDPOINT}/api/v1/mcp-server" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json" \
+    "${AUTH_HEADER[@]}" \
+    --data-binary @- > /dev/null 2>&1 &
 
   # Codex: exit 2 = block tool execution. Reason on stderr.
   # Plugin Batch 1: append richer context when the platform surfaces it.
@@ -460,8 +481,7 @@ if [ "$ALLOWED" = "false" ]; then
     fi
     CONTEXT_SUFFIX="$CONTEXT_SUFFIX]"
   fi
-  echo "AxonFlow policy violation: ${BLOCK_REASON} (${POLICIES_EVALUATED} policies evaluated)${CONTEXT_SUFFIX}" >&2
-  exit 2
+  axonflow_pre_deny "AxonFlow policy violation: ${BLOCK_REASON} (${POLICIES_EVALUATED} policies evaluated)${CONTEXT_SUFFIX}"
 fi
 
 # Allowed — exit 0

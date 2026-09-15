@@ -86,6 +86,33 @@ axonflow_throttle_reason() {
   awk 'NR==1 {print $2}' "$_AXONFLOW_THROTTLE_FILE" 2>/dev/null
 }
 
+# axonflow_throttle_remaining_seconds
+#   Prints the seconds left before the throttle deadline passes (0 when there
+#   is no deadline, or it has passed). The file is shared: every AxonFlow
+#   plugin that uses this cache directory writes the same throttle-until, so
+#   a block can outlast a credential fix, or come from another plugin's 401.
+axonflow_throttle_remaining_seconds() {
+  local until_epoch now
+  until_epoch=$(awk 'NR==1 {print $1}' "$_AXONFLOW_THROTTLE_FILE" 2>/dev/null)
+  if ! [[ "$until_epoch" =~ ^[0-9]+$ ]]; then
+    echo 0
+    return 0
+  fi
+  now=$(date -u +%s)
+  if [ "$until_epoch" -gt "$now" ]; then
+    echo $((until_epoch - now))
+  else
+    echo 0
+  fi
+}
+
+# axonflow_auth_cooldown_note
+#   One sentence naming the auth-failure cooldown that is in effect: the
+#   seconds left and the file to delete to retry at once after the fix.
+axonflow_auth_cooldown_note() {
+  echo "Governed tool calls stay blocked for another $(axonflow_throttle_remaining_seconds) seconds (the auth-failure cooldown in ${_AXONFLOW_THROTTLE_FILE}, which every AxonFlow plugin using that cache directory writes); after fixing the credential, delete that file to retry at once."
+}
+
 # _axonflow_should_show_prompt_today
 #   Returns 0 if today's date stamp is missing (so we should show the
 #   upgrade prompt at most once per UTC day).
@@ -289,7 +316,7 @@ axonflow_handle_auth_failure() {
   # off the network immediately even when the prompt is suppressed.
   if _axonflow_should_show_auth_prompt_today; then
     {
-      echo "[AxonFlow] Authentication failed (HTTP 401) against the AxonFlow agent. Governed tool calls are blocked until the credential is fixed; the agent is not asked again for ${cooldown} seconds."
+      echo "[AxonFlow] Authentication failed (HTTP 401) against the AxonFlow agent. Governed tool calls are blocked, and the agent is not asked again for ${cooldown} seconds, even after the credential is fixed, unless ${_AXONFLOW_THROTTLE_FILE} is deleted."
       echo "[AxonFlow] Refresh your credentials: https://getaxonflow.com/dashboard"
       # axonflow-enterprise#2944: when a per-user token was sent, name it as
       # a likely cause — the platform fails closed on a presented-but-invalid

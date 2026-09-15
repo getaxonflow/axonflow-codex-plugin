@@ -6,14 +6,27 @@
 # 2. Scans tool output for PII/secrets (synchronous — returns context to Codex)
 #
 # Codex PostToolUse always exits 0 — it never blocks; the tool already ran.
-# When the output could not be checked it says so, one of two ways:
+# When the output could not be checked it says so, one of two ways, reading the
+# same status table as pre-tool-check.sh (scripts/lib/failure-posture.sh):
 #   - an answer that refused the check (a 401 or its cooldown, a 429 or a
-#     Free-tier limit, another 4xx without a decision body, a result without
-#     a decision) -> a GOVERNANCE ALERT telling the model not to use the output;
-#   - no usable answer (unreachable, timeout, 5xx, JSON-RPC -32603 / -32700, an
-#     empty or unreadable body, jq or curl missing) -> AXONFLOW_FAIL_MODE
-#     decides: "open" (the default) passes the output with a notice on stderr;
-#     anything else raises the same GOVERNANCE ALERT.
+#     Free-tier limit, a 3xx, a 4xx other than 408 without a JSON-RPC answer, a
+#     JSON-RPC error other than -32603 / -32700, a result without a decision),
+#     or a check request that could not be built -> a GOVERNANCE ALERT telling
+#     the model not to use the output;
+#   - no usable answer (unreachable, timeout, 408, 5xx, JSON-RPC -32603 /
+#     -32700, an empty or unreadable body, jq or curl missing) ->
+#     AXONFLOW_FAIL_MODE decides: unset, empty or "open" passes the output with
+#     a notice on stderr; any other value raises the same GOVERNANCE ALERT.
+
+# The script's directory from builtins only: this runs before the dependency
+# check below, on a PATH that may hold nothing but bash.
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+if [ "$SCRIPT_DIR" = "${BASH_SOURCE[0]}" ]; then
+  SCRIPT_DIR="."
+fi
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
+# shellcheck source=./lib/failure-posture.sh
+. "${SCRIPT_DIR}/lib/failure-posture.sh"
 
 # Emit a PostToolUse governance alert and stop. Without jq the JSON is written
 # by hand; the message is this script's own text, and double quotes and
@@ -28,12 +41,10 @@ axonflow_post_alert() {
 }
 
 # The output could not be checked because no usable answer arrived.
-# AXONFLOW_FAIL_MODE decides: "open" (the default, case-insensitive) passes the
+# AXONFLOW_FAIL_MODE decides: unset, empty or "open" (any case) passes the
 # output and says so on stderr; any other value tells the model not to use it.
 axonflow_post_ungoverned() {
-  local mode
-  mode=$(printf '%s' "${AXONFLOW_FAIL_MODE:-open}" | tr '[:upper:]' '[:lower:]')
-  if [ "$mode" != "open" ]; then
+  if ! axonflow_fail_mode_open; then
     axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output ($1, and AXONFLOW_FAIL_MODE is not open). Do not use or reference the output in your response until it can be checked."
   fi
   echo "[AxonFlow] GOVERNANCE UNAVAILABLE: $1. This tool output was NOT checked. Set AXONFLOW_FAIL_MODE=closed to withhold unchecked output from the model." >&2
@@ -51,7 +62,6 @@ fi
 # Endpoint resolution per ADR-048: default to AxonFlow Community SaaS only when
 # the user has not set explicit config. Mirrors pre-tool-check.sh exactly so the
 # two hooks always agree on which AxonFlow they're talking to.
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -z "${AXONFLOW_ENDPOINT:-}" ] && [ -z "${AXONFLOW_AUTH:-}" ]; then
   ENDPOINT="https://try.getaxonflow.com"
   AXONFLOW_MODE="community-saas"
@@ -151,23 +161,13 @@ CONNECTOR_TYPE="codex.${TOOL_NAME}"
 
 # Determine success from tool response
 SUCCESS=$(echo "$TOOL_RESPONSE" | jq 'if .exitCode != null then (.exitCode == 0) elif .success != null then .success else true end' 2>/dev/null || echo "true")
-ERROR_MSG=$(echo "$TOOL_RESPONSE" | jq -r '.stderr // empty' 2>/dev/null || echo "")
 
-# Truncate large outputs for audit (character-safe, not byte-safe)
-TRUNCATED_OUTPUT=$(echo "$TOOL_RESPONSE" | jq -c '.' 2>/dev/null | cut -c1-500 || echo "{}")
-
-# 1. Record audit entry (fire-and-forget, background)
+# 1. Record audit entry (fire-and-forget, background). The record is built from
+# the hook input on stdin, so no field of any size becomes a command-line
+# argument; the output summary is the first 500 characters of the response.
 (
-  curl -sS --max-time "$REQUEST_TIMEOUT_SECONDS" -X POST "${ENDPOINT}/api/v1/mcp-server" \
-    -H "Content-Type: application/json" \
-    -H "Accept: application/json" \
-    "${AUTH_HEADER[@]}" \
-    -d "$(jq -n \
-      --arg tn "$TOOL_NAME" \
-      --arg ti "$TOOL_INPUT" \
-      --arg out "$TRUNCATED_OUTPUT" \
+  printf '%s' "$INPUT" | jq -c \
       --argjson success "$SUCCESS" \
-      --arg err "$ERROR_MSG" \
       '{
         jsonrpc: "2.0",
         id: "hook-audit",
@@ -175,16 +175,20 @@ TRUNCATED_OUTPUT=$(echo "$TOOL_RESPONSE" | jq -c '.' 2>/dev/null | cut -c1-500 |
         params: {
           name: "audit_tool_call",
           arguments: {
-            tool_name: $tn,
+            tool_name: .tool_name,
             caller_name: "codex",
             tool_type: "codex",
-            input: ($ti | fromjson? // {}),
-            output: {summary: $out},
+            input: (.tool_input // {}),
+            output: {summary: ((.tool_response // {}) | tojson | .[0:500])},
             success: $success,
-            error_message: $err
+            error_message: (if (.tool_response | type) == "object" then (.tool_response.stderr // "") else "" end)
           }
         }
-      }')" > /dev/null 2>&1
+      }' 2>/dev/null | curl -sS --max-time "$REQUEST_TIMEOUT_SECONDS" -X POST "${ENDPOINT}/api/v1/mcp-server" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json" \
+    "${AUTH_HEADER[@]}" \
+    --data-binary @- > /dev/null 2>&1
 ) &
 
 # 2. Scan tool output for PII/secrets (synchronous — returns context if PII found)
@@ -216,18 +220,16 @@ case "$TOOL_NAME" in
 esac
 
 if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
+  SCAN_REQUEST=$(mktemp)
   SCAN_BODY=$(mktemp)
   SCAN_HEADERS=$(mktemp)
-  trap 'rm -f "$SCAN_BODY" "$SCAN_HEADERS"' EXIT
-  SCAN_HTTP=$(curl -sS --max-time "$REQUEST_TIMEOUT_SECONDS" \
-    -D "$SCAN_HEADERS" -o "$SCAN_BODY" -w '%{http_code}' \
-    -X POST "${ENDPOINT}/api/v1/mcp-server" \
-    -H "Content-Type: application/json" \
-    -H "Accept: application/json" \
-    "${AUTH_HEADER[@]}" \
-    -d "$(jq -n \
-      --arg ct "$CONNECTOR_TYPE" \
-      --arg msg "$OUTPUT_TEXT" \
+  trap 'rm -f "$SCAN_REQUEST" "$SCAN_BODY" "$SCAN_HEADERS"' EXIT
+
+  # The output reaches jq on stdin and the body reaches curl as a file, never as
+  # a command-line argument: an argument has a size limit, and the tool decides
+  # how much output there is. If the request cannot be built, the output was
+  # never checked, and the model is told not to use it.
+  if ! printf '%s' "$OUTPUT_TEXT" | jq -Rsc --arg ct "$CONNECTOR_TYPE" \
       '{
         jsonrpc: "2.0",
         id: "hook-scan",
@@ -236,10 +238,20 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
           name: "check_output",
           arguments: {
             connector_type: $ct,
-            message: $msg
+            message: .
           }
         }
-      }')" 2>/dev/null)
+      }' > "$SCAN_REQUEST" 2>/dev/null || [ ! -s "$SCAN_REQUEST" ]; then
+    axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (the check request could not be built). Do not use or reference the output in your response until it can be checked."
+  fi
+
+  SCAN_HTTP=$(curl -sS --max-time "$REQUEST_TIMEOUT_SECONDS" \
+    -D "$SCAN_HEADERS" -o "$SCAN_BODY" -w '%{http_code}' \
+    -X POST "${ENDPOINT}/api/v1/mcp-server" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json" \
+    "${AUTH_HEADER[@]}" \
+    --data-binary @"$SCAN_REQUEST" 2>/dev/null)
   SCAN_CURL_EXIT=$?
 
   # No answer arrived: timeout, DNS failure, connection refused, TCP reset.
@@ -252,7 +264,7 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
   if axonflow_handle_envelope_response "$SCAN_HTTP" "$SCAN_BODY" "$SCAN_HEADERS"; then
     axonflow_post_alert "$AXONFLOW_LIMIT_POST_ALERT"
   fi
-  # axonflow-enterprise#2275: a 401 stamps a 5-minute cooldown (the helper) so a
+  # axonflow-enterprise#2275: a 401 stamps a cooldown (the helper; 300 seconds by default) so a
   # tight retry loop can't keep firing the same auth-failing scan request, and
   # the model is told not to use the unchecked output.
   if axonflow_handle_auth_failure "$SCAN_HTTP" "$SCAN_BODY" "$SCAN_HEADERS"; then
@@ -260,28 +272,25 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
   fi
   SCAN_RESPONSE=$(cat "$SCAN_BODY" 2>/dev/null || echo "")
 
-  # The status of an answer the lines above did not settle, judged the way
-  # pre-tool-check.sh judges it: a JSON-RPC answer (a result or an error) is the
-  # platform's answer whatever the status; only a body without one is judged by
-  # its status.
-  SCAN_TEXT=$(printf '%s' "$SCAN_RESPONSE" | jq -r 'if type == "object" then (.error.message? // (.error | strings?) // .message? // empty) else empty end' 2>/dev/null | tr '\n' ' ' | sed -e 's/[[:space:]]*$//' | cut -c1-300)
-  SCAN_IS_JSONRPC=$(printf '%s' "$SCAN_RESPONSE" | jq -r 'if type == "object" and has("jsonrpc") and (has("result") or has("error")) then "true" else "false" end' 2>/dev/null || echo "false")
-  if [ "$SCAN_HTTP" = "429" ]; then
-    axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (the AxonFlow agent answered HTTP 429, a request limit${SCAN_TEXT:+: $SCAN_TEXT}). Do not use or reference the output in your response until it can be checked."
-  fi
-  case "$SCAN_HTTP" in
-    2??) ;;
+  # The status of an answer the lines above did not settle, read by the table
+  # pre-tool-check.sh reads (scripts/lib/failure-posture.sh). The platform's
+  # words are cleaned of control characters and quoted as the platform's.
+  SCAN_TEXT=$(axonflow_platform_text "$SCAN_RESPONSE")
+  SCAN_SAID="${SCAN_TEXT:+; AxonFlow said: \"$SCAN_TEXT\"}"
+  SCAN_IS_JSONRPC=$(axonflow_is_jsonrpc_answer "$SCAN_RESPONSE")
+  case "$(axonflow_status_class "$SCAN_HTTP" "$SCAN_IS_JSONRPC")" in
+    answer) ;;
+    limit)
+      axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (the AxonFlow agent answered HTTP 429, a request limit${SCAN_SAID}). Do not use or reference the output in your response until it can be checked."
+      ;;
+    too_large)
+      axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (the AxonFlow agent refused the check as too large, HTTP 413${SCAN_SAID}). Do not use or reference the output in your response until it can be checked."
+      ;;
+    refused)
+      axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (the AxonFlow agent refused the request, HTTP ${SCAN_HTTP}${SCAN_SAID}). Do not use or reference the output in your response until it can be checked."
+      ;;
     *)
-      if [ "$SCAN_IS_JSONRPC" != "true" ]; then
-        case "$SCAN_HTTP" in
-          4??)
-            axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (the AxonFlow agent refused the request, HTTP ${SCAN_HTTP}${SCAN_TEXT:+: $SCAN_TEXT}). Do not use or reference the output in your response until it can be checked."
-            ;;
-          *)
-            axonflow_post_ungoverned "the AxonFlow agent answered HTTP ${SCAN_HTTP}${SCAN_TEXT:+ ($SCAN_TEXT)}"
-            ;;
-        esac
-      fi
+      axonflow_post_ungoverned "the AxonFlow agent answered HTTP ${SCAN_HTTP}${SCAN_SAID}"
       ;;
   esac
 
@@ -290,16 +299,17 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
   fi
 
   # A JSON-RPC error is not a check. Server-internal and parse errors are no
-  # usable answer; every other code (auth, method, params, unknown) refused it.
-  SCAN_RPC_ERROR=$(echo "$SCAN_RESPONSE" | jq -r '.error.message // empty' 2>/dev/null || echo "")
-  if [ -n "$SCAN_RPC_ERROR" ]; then
-    SCAN_RPC_CODE=$(echo "$SCAN_RESPONSE" | jq -r '.error.code // 0' 2>/dev/null || echo "0")
+  # usable answer; every other code (auth, method, params, unknown), and an
+  # error object with no numeric code or no message, refused it.
+  SCAN_RPC_CODE=$(axonflow_jsonrpc_error_code "$SCAN_RESPONSE")
+  if [ -n "$SCAN_RPC_CODE" ]; then
+    SCAN_RPC_ERROR="${SCAN_TEXT:-no message}"
     case "$SCAN_RPC_CODE" in
       -32603|-32700)
-        axonflow_post_ungoverned "the AxonFlow agent answered a server error (${SCAN_RPC_ERROR}, code ${SCAN_RPC_CODE})"
+        axonflow_post_ungoverned "the AxonFlow agent answered a server error (code ${SCAN_RPC_CODE}; AxonFlow said: \"${SCAN_RPC_ERROR}\")"
         ;;
       *)
-        axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (${SCAN_RPC_ERROR}, code ${SCAN_RPC_CODE}). Do not use or reference the output in your response until it can be checked."
+        axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (the AxonFlow agent refused the check, code ${SCAN_RPC_CODE}; AxonFlow said: \"${SCAN_RPC_ERROR}\"). Do not use or reference the output in your response until it can be checked."
         ;;
     esac
   fi
@@ -322,7 +332,7 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
     if axonflow_handle_envelope_text "$SCAN_RESULT"; then
       axonflow_post_alert "$AXONFLOW_LIMIT_POST_ALERT"
     fi
-    SCAN_ERROR=$(echo "$SCAN_RESULT" | jq -r '.error // empty' 2>/dev/null || echo "")
+    SCAN_ERROR=$(axonflow_clean_text "$(echo "$SCAN_RESULT" | jq -r '.error // empty' 2>/dev/null)")
     axonflow_post_alert "GOVERNANCE ALERT: AxonFlow could not check this tool output (${SCAN_ERROR:-the AxonFlow agent returned no decision}). Do not use or reference the output in your response until it can be checked."
   fi
   REDACTED=$(echo "$SCAN_RESULT" | jq -r '.redacted_message // empty' 2>/dev/null || echo "")
@@ -341,7 +351,7 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
       }'
     exit 0
   elif [ "$ALLOWED" = "false" ]; then
-    BLOCK_REASON=$(echo "$SCAN_RESULT" | jq -r '.block_reason // "Policy violation in tool output"' 2>/dev/null || echo "")
+    BLOCK_REASON=$(axonflow_clean_text "$(echo "$SCAN_RESULT" | jq -r '.block_reason // "Policy violation in tool output"' 2>/dev/null)")
     jq -n \
       --arg reason "$BLOCK_REASON" \
       '{

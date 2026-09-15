@@ -493,7 +493,9 @@ test_401_auth_failure_stamps_throttle() {
   # The cooldown spares the agent a retry storm; it never lets a tool call run,
   # so the nudge says calls are blocked, not that governance is paused.
   assert_contains "stderr names HTTP 401 + that tool calls are blocked" "$(cat "$stderr_out")" \
-    "Authentication failed (HTTP 401) against the AxonFlow agent. Governed tool calls are blocked until the credential is fixed; the agent is not asked again for 300 seconds."
+    "Authentication failed (HTTP 401) against the AxonFlow agent. Governed tool calls are blocked, and the agent is not asked again for 300 seconds, even after the credential is fixed, unless "
+  assert_contains "stderr names the cooldown stamp file to delete" "$(cat "$stderr_out")" \
+    "axonflow/throttle-until is deleted."
   assert_contains "stderr points to dashboard for credential refresh" "$(cat "$stderr_out")" \
     "https://getaxonflow.com/dashboard"
 

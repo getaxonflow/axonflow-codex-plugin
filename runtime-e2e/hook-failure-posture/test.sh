@@ -4,7 +4,8 @@
 # Fires the plugin's REAL hook scripts (scripts/pre-tool-check.sh and
 # scripts/post-tool-audit.sh) with Codex's hook JSON on stdin, the way Codex
 # runs them, against a REAL AxonFlow stack and against an endpoint nothing
-# listens on. No mocks, no stubs. See README.md.
+# listens on. No mocks, no stubs. Leg 5 can admit up to 5 new client ids on a
+# community stack below its service-principal ceiling. See README.md.
 #
 # Usage: AXONFLOW_ENDPOINT=http://localhost:8080 bash runtime-e2e/hook-failure-posture/test.sh
 
@@ -123,6 +124,77 @@ if [ "$(rc pre-deny-open)" = 2 ] && has pre-deny-open "AxonFlow policy violation
   pass "a deny under AXONFLOW_FAIL_MODE=open is still blocked (exit 2)"
 else
   fail "a deny under open: exit $(rc pre-deny-open), stderr: $(cat "$EVIDENCE/pre-deny-open.stderr")"
+fi
+
+echo ""
+echo "--- 5. a live 401 from the agent: blocked, the cooldown stamped, the output withheld ---"
+# A community agent checks no client secret. The one 401 it gives is its MCP
+# server's answer to a client id the organization has not admitted, once the
+# organization has admitted its service-principal ceiling (5 on the community
+# edition): 401 -32001 "Authentication required", where the REST routes answer
+# 402 (getaxonflow/axonflow-enterprise#4249, comment 5682255301). So this leg
+# first sends one request as this suite's own client (no credential), keeping
+# that client admitted, then new client ids until the MCP server refuses one:
+# at most 5 requests. On a stack below its ceiling those requests ADMIT new
+# client ids, and a later suite presenting a client id not yet admitted is
+# then refused. That is the price of a live 401 on this edition.
+mcp_status_as() {  # mcp_status_as <client id, or empty for no credential>
+  local auth_args=()
+  if [ -n "$1" ]; then
+    auth_args=(-H "Authorization: Basic $(printf '%s:hook-failure-posture' "$1" | base64 | tr -d '\n')")
+  fi
+  curl -sS -m 10 -o /dev/null -w '%{http_code}' -X POST "$ENDPOINT/api/v1/mcp-server" \
+    -H "Content-Type: application/json" ${auth_args[@]+"${auth_args[@]}"} \
+    -d '{"jsonrpc":"2.0","id":"hook-failure-posture","method":"tools/call","params":{"name":"check_policy","arguments":{"connector_type":"codex.exec_command","statement":"echo hook-failure-posture","operation":"execute"}}}'
+}
+OWN_STATUS=$(mcp_status_as "")
+UNADMITTED=""
+for i in 1 2 3 4 5; do
+  candidate="hfp-unadmitted-$(date +%s)-$$-$i"
+  if [ "$(mcp_status_as "$candidate")" = "401" ]; then
+    UNADMITTED="$candidate"
+    break
+  fi
+done
+if [ -z "$UNADMITTED" ]; then
+  fail "no live 401: this suite's own client answered HTTP $OWN_STATUS and 5 new client ids were all admitted (a community stack refuses the next one past its ceiling)"
+else
+  echo "(the MCP server refused client id $UNADMITTED with HTTP 401)"
+  AUTH_401=$(printf '%s:hook-failure-posture' "$UNADMITTED" | base64 | tr -d '\n')
+  CACHE_401="$SANDBOX/cache-live-401"
+
+  fire "$PRE_HOOK" pre-401 "$ENDPOINT" "$(pre_json "echo hook-failure-posture 401")" AXONFLOW_AUTH="$AUTH_401" XDG_CACHE_HOME="$CACHE_401"
+  if [ "$(rc pre-401)" = 2 ] && has pre-401 "rejected authentication (HTTP 401" stderr && has pre-401 'AxonFlow said: "Authentication required"' stderr; then
+    pass "a live 401 blocks (exit 2) with the platform's words: $(grep -F 'rejected authentication' "$EVIDENCE/pre-401.stderr" | head -1 | cut -c1-160)"
+  else
+    fail "a live 401: exit $(rc pre-401), stderr: $(cat "$EVIDENCE/pre-401.stderr")"
+  fi
+  if grep -q "auth_failure" "$CACHE_401/axonflow/throttle-until" 2>/dev/null; then
+    pass "the live 401 stamped the auth_failure cooldown"
+  else
+    fail "the live 401 stamped no auth_failure cooldown: $(cat "$CACHE_401/axonflow/throttle-until" 2>/dev/null)"
+  fi
+
+  fire "$PRE_HOOK" pre-401-cooldown "$ENDPOINT" "$(pre_json "echo hook-failure-posture cooldown")" AXONFLOW_AUTH="$AUTH_401" XDG_CACHE_HOME="$CACHE_401"
+  if [ "$(rc pre-401-cooldown)" = 2 ] && has pre-401-cooldown "auth-failure cooldown is active" stderr && has pre-401-cooldown "stay blocked for another" stderr; then
+    pass "the cooldown blocks the next call (exit 2), naming the seconds left and the stamp file"
+  else
+    fail "the cooldown: exit $(rc pre-401-cooldown), stderr: $(cat "$EVIDENCE/pre-401-cooldown.stderr")"
+  fi
+
+  fire "$PRE_HOOK" pre-401-open "$ENDPOINT" "$(pre_json "echo hook-failure-posture 401 open")" AXONFLOW_AUTH="$AUTH_401" AXONFLOW_FAIL_MODE=open
+  if [ "$(rc pre-401-open)" = 2 ]; then
+    pass "a live 401 under AXONFLOW_FAIL_MODE=open still blocks (exit 2)"
+  else
+    fail "a live 401 under open: exit $(rc pre-401-open), stderr: $(cat "$EVIDENCE/pre-401-open.stderr")"
+  fi
+
+  fire "$POST_HOOK" post-401 "$ENDPOINT" "$(post_json "total 0")" AXONFLOW_AUTH="$AUTH_401"
+  if [ "$(rc post-401)" = 0 ] && jq -r '.hookSpecificOutput.additionalContext // empty' "$EVIDENCE/post-401.stdout" 2>/dev/null | grep -qF "rejected authentication, HTTP 401"; then
+    pass "a live 401 (post): the governance alert withholds the output"
+  else
+    fail "a live 401 (post): exit $(rc post-401), stdout: $(cat "$EVIDENCE/post-401.stdout")"
+  fi
 fi
 
 echo ""

@@ -9,6 +9,10 @@
 # The seed is found by its decision_id. On AxonFlow v11.0.0 an audit entry's
 # query field is a summary ("mcp check_policy: codex.Bash"), not the statement,
 # so a marker placed in the statement cannot be found by text (measured).
+#
+# The prompt names the decision_id, so an agent could echo it back without
+# searching. The outcome is therefore the entry's timestamp, which only the
+# search result carries, compared exactly with the entry the suite finds itself.
 
 set -uo pipefail
 
@@ -35,10 +39,11 @@ echo "--- Seeded decision_id: $DECISION_ID ---"
 sleep 2
 
 # The seeded decision, found directly through the same tool the agent will call.
-DIRECT_HITS=$(mcp_tool_call search_audit_events '{"limit":50}' \
+DIRECT_ENTRY=$(mcp_tool_call search_audit_events '{"limit":50}' \
   | jq -r '.result.content[0].text // ""' \
-  | jq --arg d "$DECISION_ID" '[.entries[]? | select(.policy_details.decision_id == $d or .id == ("audit_" + $d))] | length' 2>/dev/null)
-if [ "${DIRECT_HITS:-0}" -lt 1 ]; then
+  | jq -c --arg d "$DECISION_ID" '[.entries[]? | select(.policy_details.decision_id == $d or .id == ("audit_" + $d))][0] // empty' 2>/dev/null)
+DIRECT_TIMESTAMP=$(printf '%s' "$DIRECT_ENTRY" | jq -r '.timestamp // empty' 2>/dev/null)
+if [ -z "$DIRECT_ENTRY" ] || [ -z "$DIRECT_TIMESTAMP" ]; then
   # Previously "SKIP:" + exit 0 (#87): success reported for precisely the
   # condition that makes the rest of this suite meaningless. If the seeded
   # decision never reaches the audit log, the agent-driven search below has
@@ -53,9 +58,9 @@ if [ "${DIRECT_HITS:-0}" -lt 1 ]; then
   echo "      is a reason to exit 0."
   exit 1
 fi
-echo "--- search_audit_events finds the seeded decision directly ($DIRECT_HITS entry) ---"
+echo "--- search_audit_events finds the seeded decision directly (timestamp $DIRECT_TIMESTAMP) ---"
 
-PROMPT="Call the mcp__${MCP_SERVER_NAME}__search_audit_events tool with limit=50 to fetch recent audit events. Find the entry whose policy_details.decision_id is \"$DECISION_ID\" and report it. Output exactly the literal text SMOKE_RESULT: followed by a single-line JSON: SMOKE_RESULT: {\"decision_found\":<true or false>,\"decision_id\":\"<the decision_id of the entry you found, or empty>\",\"policy_decision\":\"<that entry's policy_decision, or empty>\"}."
+PROMPT="Call the mcp__${MCP_SERVER_NAME}__search_audit_events tool with limit=50 to fetch recent audit events. Find the entry whose policy_details.decision_id is \"$DECISION_ID\" and report it. Output exactly the literal text SMOKE_RESULT: followed by a single-line JSON: SMOKE_RESULT: {\"decision_found\":<true or false>,\"timestamp\":\"<that entry's timestamp field, copied exactly, or empty>\",\"policy_decision\":\"<that entry's policy_decision, or empty>\"}."
 
 OUTPUT_FILE=$(mktemp -t axonflow-codex-audit.XXXXXX)
 trap 'codex_cleanup_mcp; rm -f "$OUTPUT_FILE"' EXIT
@@ -88,13 +93,13 @@ fi
 
 SMOKE_LINE=$(smoke_line "$OUTPUT_FILE")
 FOUND=$(printf '%s' "$SMOKE_LINE" | jq -r '.decision_found // empty' 2>/dev/null)
-FOUND_ID=$(printf '%s' "$SMOKE_LINE" | jq -r '.decision_id // empty' 2>/dev/null)
+FOUND_TIMESTAMP=$(printf '%s' "$SMOKE_LINE" | jq -r '.timestamp // empty' 2>/dev/null)
 FOUND_DECISION=$(printf '%s' "$SMOKE_LINE" | jq -r '.policy_decision // empty' 2>/dev/null)
-if [ "$FOUND" = "true" ] && [ "$FOUND_ID" = "$DECISION_ID" ]; then
-  echo "PASS: the agent's audit search found the seeded decision ($FOUND_ID, $FOUND_DECISION) — outcome verified"
+if [ "$FOUND" = "true" ] && [ "$FOUND_TIMESTAMP" = "$DIRECT_TIMESTAMP" ]; then
+  echo "PASS: the agent's audit search found the seeded decision (timestamp $FOUND_TIMESTAMP, $FOUND_DECISION): a value only the search result carries — outcome verified"
 else
   tail -10 "$OUTPUT_FILE" | sed 's/^/      /'
-  echo "FAIL: the agent did NOT report the seeded decision (SMOKE_RESULT: ${SMOKE_LINE:-none})"
+  echo "FAIL: the agent did NOT report the seeded decision's timestamp $DIRECT_TIMESTAMP (SMOKE_RESULT: ${SMOKE_LINE:-none})"
   errors=$((errors + 1))
 fi
 if [ "$FOUND_DECISION" = "blocked" ]; then

@@ -66,7 +66,8 @@ chmod +x "$STAGE_DIR/scripts/"*.sh
 for f in .codex-plugin/plugin.json .mcp.json hooks/hooks.json \
          scripts/pre-tool-check.sh scripts/post-tool-audit.sh \
          scripts/telemetry-ping.sh scripts/mcp-auth-headers.sh \
-         scripts/recover.sh scripts/lib/license-token.sh; do
+         scripts/recover.sh scripts/lib/license-token.sh \
+         scripts/lib/failure-posture.sh; do
   if [ -f "$STAGE_DIR/$f" ]; then pass "staged $f"
   else fail "missing $f after stage"
   fi
