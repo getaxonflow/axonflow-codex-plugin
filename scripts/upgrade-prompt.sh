@@ -53,6 +53,7 @@ if ! command -v axonflow_clean_text >/dev/null 2>&1; then
   fi
   # shellcheck source=./lib/failure-posture.sh
   . "${_axonflow_prompt_dir}/lib/failure-posture.sh" 2>/dev/null
+  unset _axonflow_prompt_dir
 fi
 
 _axonflow_ensure_cache_dir() {

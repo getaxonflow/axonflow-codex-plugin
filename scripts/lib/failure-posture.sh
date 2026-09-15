@@ -42,6 +42,22 @@ axonflow_clean_text() {
     | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | cut -c1-300
 }
 
+# axonflow_clean_block <text>
+#   Text from the network that the model reads as a block (a redacted output):
+#   every control character is dropped except newline and tab, and nothing is
+#   cut, since a shortened redaction would no longer be the redaction.
+axonflow_clean_block() {
+  printf '%s' "$1" | LC_ALL=C tr -d '\000-\010\013-\037\177'
+}
+
+# axonflow_result_text <json> <jq filter>
+#   One field of a policy result, read with the jq filter and cleaned by
+#   axonflow_clean_text. Every short field the hooks print from a result goes
+#   through here, so none can skip the cleaning.
+axonflow_result_text() {
+  axonflow_clean_text "$(printf '%s' "$1" | jq -r "$2" 2>/dev/null)"
+}
+
 # axonflow_platform_text <body>
 #   The platform's own words for a refusal (a JSON-RPC error message, a coded
 #   error envelope's message, or a plain {"error": "..."}), cleaned. Empty when
@@ -69,6 +85,16 @@ axonflow_is_jsonrpc_answer() {
 #   than one JSON document (read the same way as axonflow_is_jsonrpc_answer).
 axonflow_jsonrpc_error_code() {
   printf '%s' "$1" | jq -rs 'if length == 1 and (.[0] | type) == "object" and ((.[0].error | type) == "object") then (if (.[0].error.code | type) == "number" then (.[0].error.code | tostring) else "none" end) else empty end' 2>/dev/null
+}
+
+# axonflow_one_json_document <body>
+#   Returns 0 when the body is exactly one JSON document. Each hook checks this
+#   right after the empty-body check: the two helpers above read a body of two
+#   documents as no answer and no error, while the result readers after them
+#   would take the allow from one document and ignore an error in the other.
+#   Anything but one document (two or more, or not JSON) is no usable answer.
+axonflow_one_json_document() {
+  [ "$(printf '%s' "$1" | jq -s 'length' 2>/dev/null)" = "1" ]
 }
 
 # axonflow_status_class <http_code> <is_jsonrpc_answer>

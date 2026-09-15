@@ -47,7 +47,7 @@ axonflow_post_unchecked() {
 # check from a refusal, so the model is told not to use the output.
 # shellcheck source=./lib/failure-posture.sh
 if ! . "${SCRIPT_DIR}/lib/failure-posture.sh" 2>/dev/null; then
-  axonflow_post_unchecked "the AxonFlow plugin install is incomplete: scripts/lib/failure-posture.sh is missing"
+  axonflow_post_unchecked "the AxonFlow plugin install is incomplete: scripts/lib/failure-posture.sh is missing or unreadable"
 fi
 
 # The output could not be checked because no usable answer arrived.
@@ -215,12 +215,16 @@ case "$TOOL_NAME" in
     # an object. Reading only .stdout skipped every real Codex output with no
     # word, even under AXONFLOW_FAIL_MODE=closed. Both shapes are read.
     OUTPUT_TEXT=$(printf '%s' "$INPUT" | jq -r '.tool_response | if type == "string" then . elif type == "object" then (.stdout // .output // empty) else empty end' 2>/dev/null || echo "")
-    # If stdout is empty but command contains a redirect (echo ... > file),
-    # scan the command itself — the PII is in the input, not the output.
-    if [ -z "$OUTPUT_TEXT" ] || [ "$OUTPUT_TEXT" = "null" ]; then
-      COMMAND=$(echo "$TOOL_INPUT" | jq -r '.cmd // .command // empty' 2>/dev/null || echo "")
-      if echo "$COMMAND" | grep -qE '>>?\s*\S' ; then
+    # A command with a redirect (echo ... > file) carries its data in the
+    # input, not the output, so the command is scanned too, ahead of whatever
+    # output the command printed.
+    COMMAND=$(printf '%s' "$TOOL_INPUT" | jq -r '.cmd // .command // empty' 2>/dev/null || echo "")
+    if grep -qE '>>?\s*\S' <<<"$COMMAND"; then
+      if [ -z "$OUTPUT_TEXT" ] || [ "$OUTPUT_TEXT" = "null" ]; then
         OUTPUT_TEXT="$COMMAND"
+      else
+        OUTPUT_TEXT="${COMMAND}
+${OUTPUT_TEXT}"
       fi
     fi
     ;;
@@ -318,6 +322,12 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
     axonflow_post_ungoverned "the AxonFlow agent answered HTTP ${SCAN_HTTP} with an empty body"
   fi
 
+  # A body that is not exactly one JSON document is no usable answer: a result
+  # and an error in one body would each be read by a different line below.
+  if ! axonflow_one_json_document "$SCAN_RESPONSE"; then
+    axonflow_post_ungoverned "the AxonFlow agent's answer (HTTP ${SCAN_HTTP}) was not one JSON document"
+  fi
+
   # A JSON-RPC error is not a check. Server-internal and parse errors are no
   # usable answer; every other code (auth, method, params, unknown), and an
   # error object with no numeric code or no message, refused it.
@@ -352,11 +362,13 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
     if axonflow_handle_envelope_text "$SCAN_RESULT"; then
       axonflow_post_alert "$AXONFLOW_LIMIT_POST_ALERT"
     fi
-    SCAN_ERROR=$(axonflow_clean_text "$(echo "$SCAN_RESULT" | jq -r '.error // empty' 2>/dev/null)")
+    SCAN_ERROR=$(axonflow_result_text "$SCAN_RESULT" '.error // empty')
     axonflow_post_unchecked "${SCAN_ERROR:-the AxonFlow agent returned no decision}"
   fi
-  REDACTED=$(echo "$SCAN_RESULT" | jq -r '.redacted_message // empty' 2>/dev/null || echo "")
-  POLICIES_FOUND=$(axonflow_clean_text "$(echo "$SCAN_RESULT" | jq -r '.policies_evaluated // 0' 2>/dev/null)")
+  # The redacted output is handed to the model whole: its control characters
+  # go, except newline and tab, and it is not cut.
+  REDACTED=$(axonflow_clean_block "$(printf '%s' "$SCAN_RESULT" | jq -r '.redacted_message // empty' 2>/dev/null)")
+  POLICIES_FOUND=$(axonflow_result_text "$SCAN_RESULT" '.policies_evaluated // 0')
   ALLOWED=$(echo "$SCAN_RESULT" | jq -r 'if .allowed == false then "false" else "true" end' 2>/dev/null || echo "true")
 
   if [ -n "$REDACTED" ] && [ "$REDACTED" != "null" ]; then
@@ -371,7 +383,7 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
       }'
     exit 0
   elif [ "$ALLOWED" = "false" ]; then
-    BLOCK_REASON=$(axonflow_clean_text "$(echo "$SCAN_RESULT" | jq -r '.block_reason // "Policy violation in tool output"' 2>/dev/null)")
+    BLOCK_REASON=$(axonflow_result_text "$SCAN_RESULT" '.block_reason // "Policy violation in tool output"')
     jq -n \
       --arg reason "$BLOCK_REASON" \
       '{

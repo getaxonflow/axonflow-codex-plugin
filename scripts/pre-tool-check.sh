@@ -48,7 +48,7 @@ axonflow_pre_deny() {
 # decision from a refusal, so it blocks and says the install is incomplete.
 # shellcheck source=./lib/failure-posture.sh
 if ! . "${SCRIPT_DIR}/lib/failure-posture.sh" 2>/dev/null; then
-  axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow plugin install is incomplete (scripts/lib/failure-posture.sh is missing), so this tool call is blocked. Reinstall the plugin."
+  axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow plugin install is incomplete (scripts/lib/failure-posture.sh is missing or unreadable), so this tool call is blocked. Reinstall the plugin."
 fi
 
 # A governed check that got no usable answer. AXONFLOW_FAIL_MODE decides:
@@ -363,6 +363,13 @@ if [ -z "$RESPONSE" ]; then
   axonflow_pre_ungoverned "the AxonFlow agent answered HTTP ${HTTP_CODE} with an empty body"
 fi
 
+# A body that is not exactly one JSON document is no usable answer. Two
+# documents (a result and an error, in either order) would each be read by a
+# different line below, and the allow could win.
+if ! axonflow_one_json_document "$RESPONSE"; then
+  axonflow_pre_ungoverned "the AxonFlow agent's answer (HTTP ${HTTP_CODE}) was not one JSON document"
+fi
+
 # Check for JSON-RPC error responses and apply the fail-open / fail-closed
 # policy from issue #1545 Direction 3:
 #
@@ -424,23 +431,23 @@ if [ "$RESULT_IS_ERROR" = "true" ] || [ "$HAS_DECISION" != "true" ]; then
   if axonflow_handle_envelope_text "$TOOL_RESULT"; then
     axonflow_pre_deny "$AXONFLOW_LIMIT_DENY_REASON"
   fi
-  RESULT_ERROR=$(axonflow_clean_text "$(echo "$TOOL_RESULT" | jq -r '.error // empty' 2>/dev/null)")
+  RESULT_ERROR=$(axonflow_result_text "$TOOL_RESULT" '.error // empty')
   axonflow_pre_deny "AxonFlow governance blocked: ${RESULT_ERROR:-the AxonFlow agent returned a policy result without a decision}, so this tool call is blocked."
 fi
 
 # Note: jq's // operator treats false as falsy, so .allowed // true returns
 # true even when .allowed is false. Use explicit if/else instead.
 ALLOWED=$(echo "$TOOL_RESULT" | jq -r 'if .allowed == false then "false" else "true" end' 2>/dev/null || echo "true")
-BLOCK_REASON=$(axonflow_clean_text "$(echo "$TOOL_RESULT" | jq -r '.block_reason // empty' 2>/dev/null)")
-POLICIES_EVALUATED=$(axonflow_clean_text "$(echo "$TOOL_RESULT" | jq -r '.policies_evaluated // 0' 2>/dev/null)")
+BLOCK_REASON=$(axonflow_result_text "$TOOL_RESULT" '.block_reason // empty')
+POLICIES_EVALUATED=$(axonflow_result_text "$TOOL_RESULT" '.policies_evaluated // 0')
 
 # Plugin Batch 1 (ADR-042 + ADR-043): richer block context surfaced when
 # the platform is v7.1.0+. All fields are optional; absent on older platforms.
 # Every field printed below came from the network: its control characters go.
-DECISION_ID=$(axonflow_clean_text "$(echo "$TOOL_RESULT" | jq -r '.decision_id // empty' 2>/dev/null)")
-RISK_LEVEL=$(axonflow_clean_text "$(echo "$TOOL_RESULT" | jq -r '.risk_level // empty' 2>/dev/null)")
+DECISION_ID=$(axonflow_result_text "$TOOL_RESULT" '.decision_id // empty')
+RISK_LEVEL=$(axonflow_result_text "$TOOL_RESULT" '.risk_level // empty')
 OVERRIDE_AVAILABLE=$(echo "$TOOL_RESULT" | jq -r '.override_available // false' 2>/dev/null || echo "false")
-OVERRIDE_EXISTING_ID=$(axonflow_clean_text "$(echo "$TOOL_RESULT" | jq -r '.override_existing_id // empty' 2>/dev/null)")
+OVERRIDE_EXISTING_ID=$(axonflow_result_text "$TOOL_RESULT" '.override_existing_id // empty')
 
 if [ "$ALLOWED" = "false" ]; then
   # Record the blocked attempt in the audit trail (fire-and-forget)
