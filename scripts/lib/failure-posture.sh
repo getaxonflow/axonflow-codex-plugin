@@ -26,9 +26,51 @@
 #   a check that got no usable answer lets the call run with a notice. Any
 #   other value blocks it.
 axonflow_fail_mode_open() {
-  local mode
-  mode=$(printf '%s' "${AXONFLOW_FAIL_MODE:-}" | tr '[:upper:]' '[:lower:]')
-  [ -z "$mode" ] || [ "$mode" = "open" ]
+  # Builtins only: a missing tr must not read "closed" as open.
+  case "${AXONFLOW_FAIL_MODE:-}" in
+    ""|[Oo][Pp][Ee][Nn]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# The hook's time budget. hooks/hooks.json runs each hook with "timeout": 15.
+# Codex documents exit 2 as a block and any other non-zero exit as a
+# non-blocking error, so a hook killed at its timeout must not be the way a
+# block or a notice fails to arrive. Every request a hook makes therefore fits
+# inside this budget, counted from the hook's own start (bash's SECONDS), with
+# room to print the answer. tests/test-hooks.sh checks that it stays below
+# every hooks.json timeout.
+_AXONFLOW_HOOK_BUDGET_SECONDS=13
+
+# axonflow_budget_timeout <configured seconds> [reserve seconds]
+#   The --max-time for the next request: the configured value, or the budget
+#   left after holding back `reserve` seconds (default 1), whichever is
+#   smaller. Prints 0 when nothing is left.
+axonflow_budget_timeout() {
+  local configured="$1" reserve="${2:-1}" left
+  left=$(( _AXONFLOW_HOOK_BUDGET_SECONDS - SECONDS - reserve ))
+  if [ "$left" -lt "$configured" ]; then
+    configured=$left
+  fi
+  if [ "$configured" -lt 0 ]; then
+    configured=0
+  fi
+  echo "$configured"
+}
+
+# axonflow_bootstrap_cleanup
+#   Runs the registration bootstrap's EXIT cleanup (its temporary files and,
+#   without flock, its try-registration.lock.d) when the bootstrap installed
+#   one in this run (its marker, which the hooks clear, with any function of
+#   that name from the environment, before sourcing the bootstrap). A hook
+#   that sets its own EXIT trap replaces the bootstrap's, so the hook's trap
+#   calls this: a lock left behind blocks the next registration for five
+#   minutes.
+axonflow_bootstrap_cleanup() {
+  if [ "${_AXONFLOW_BOOTSTRAP_TRAP:-}" = "1" ] && declare -F _axonflow_bootstrap_cleanup_on_exit >/dev/null 2>&1; then
+    _axonflow_bootstrap_cleanup_on_exit
+  fi
+  return 0
 }
 
 # axonflow_clean_text <text>

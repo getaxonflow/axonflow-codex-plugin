@@ -87,7 +87,11 @@ else
   AXONFLOW_MODE="self-hosted"
 fi
 AUTH="${AXONFLOW_AUTH:-}"
-REQUEST_TIMEOUT_SECONDS="${AXONFLOW_TIMEOUT_SECONDS:-8}"
+# The configured per-request timeout (a positive integer; anything else is the
+# default). Each request gets no more than the hook's time budget leaves.
+CONFIGURED_TIMEOUT_SECONDS="${AXONFLOW_TIMEOUT_SECONDS:-8}"
+case "$CONFIGURED_TIMEOUT_SECONDS" in ''|*[!0-9]*|0) CONFIGURED_TIMEOUT_SECONDS=8 ;; esac
+REQUEST_TIMEOUT_SECONDS="$CONFIGURED_TIMEOUT_SECONDS"
 export AXONFLOW_MODE
 
 # Mode-clarity canary on stderr (NEVER stdout — stdout is the hook protocol).
@@ -99,6 +103,13 @@ echo "[AxonFlow] Connected to AxonFlow at ${ENDPOINT} (mode=${AXONFLOW_MODE})" >
 # Community-SaaS bootstrap: register with try.getaxonflow.com on first run and
 # load the resulting Basic-auth credential into AXONFLOW_AUTH. No-op when the
 # user has set explicit config (AXONFLOW_MODE != community-saas).
+# The registration gets at most 5 seconds, and only what the budget leaves
+# after holding 4 back for the policy check itself.
+_AXONFLOW_REGISTER_MAX_TIME=$(axonflow_budget_timeout 5 4)
+# Only this run's bootstrap may define its cleanup: nothing of that name from
+# the environment (an exported shell function) is ever called.
+unset _AXONFLOW_BOOTSTRAP_TRAP
+unset -f _axonflow_bootstrap_cleanup_on_exit 2>/dev/null
 # shellcheck disable=SC1091
 . "${SCRIPT_DIR}/community-saas-bootstrap.sh"
 AUTH="${AXONFLOW_AUTH:-}"
@@ -193,12 +204,12 @@ fi
 
 # Telemetry heartbeat (7-day cadence; stamp-on-delivery; in-flight gate).
 # Backgrounded so it never blocks the hook protocol.
-"${SCRIPT_DIR}/telemetry-ping.sh" </dev/null &
+"${SCRIPT_DIR}/telemetry-ping.sh" </dev/null >/dev/null &
 # Plugin/platform version compatibility check — fire-and-forget, runs once
 # per install, warns to stderr if the plugin is below the platform's
 # min_plugin_version (axonflow-enterprise#1764). Same fire-and-forget shape
 # as telemetry-ping; never blocks the hook hot path.
-"${SCRIPT_DIR}/version-check.sh" </dev/null &
+"${SCRIPT_DIR}/version-check.sh" </dev/null >/dev/null &
 
 # Read hook input from stdin
 INPUT=$(cat)
@@ -243,9 +254,27 @@ case "$TOOL_NAME" in
     ;;
 esac
 
-# Skip if no statement to evaluate
-if [ -z "$STATEMENT" ] || [ "$STATEMENT" = "null" ] || [ "$STATEMENT" = "{}" ]; then
-  exit 0
+# An input with nothing to check (an empty command, an MCP call with no
+# arguments) is still a governed call: it is checked as the tool's name plus
+# the input's plain fields, never skipped. A shell command that is literally
+# "null" or "{}" is that command, and is checked as it is.
+NOTHING_TO_CHECK=""
+case "$TOOL_NAME" in
+  Bash|exec_command|shell)
+    [ -z "$STATEMENT" ] && NOTHING_TO_CHECK=1
+    ;;
+  *)
+    if [ -z "$STATEMENT" ] || [ "$STATEMENT" = "null" ] || [ "$STATEMENT" = "{}" ]; then
+      NOTHING_TO_CHECK=1
+    fi
+    ;;
+esac
+if [ -n "$NOTHING_TO_CHECK" ]; then
+  STATEMENT=$(printf '%s' "$TOOL_INPUT" | jq -c --arg t "$TOOL_NAME" \
+    '{tool: $t} + (if type == "object" then with_entries(select(.value | type == "string" or type == "number" or type == "boolean")) else {} end)' 2>/dev/null)
+  if [ -z "$STATEMENT" ]; then
+    STATEMENT=$(jq -nc --arg t "$TOOL_NAME" '{tool: $t}')
+  fi
 fi
 
 # Back-off: a recent governed call stamped the throttle-until file, and the
@@ -256,12 +285,19 @@ fi
 #   - the 401 cooldown (auth_failure, axonflow-enterprise#2275): the credential
 #     was rejected, and a rejected credential never lets a tool call run. The
 #     cooldown only spares the platform the retry storm.
-if axonflow_throttle_active; then
-  if [ "$(axonflow_throttle_reason)" = "auth_failure" ]; then
+# Which stamps gate follows the stamp rules in scripts/upgrade-prompt.sh
+# (axonflow_governed_stamp): a request-rate limit for at most 300 s after it
+# was written, the auth_failure cooldown for this hook's configured length
+# from when it was written; any other stamp gates nothing and is left on disk
+# for the plugin that wrote it.
+case "$(axonflow_governed_stamp)" in
+  auth_failure)
     axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow agent rejected authentication (HTTP 401) and an auth-failure cooldown is active, so this tool call is blocked. $(axonflow_auth_cooldown_note) ${AUTH_HINT}"
-  fi
-  axonflow_pre_deny "$AXONFLOW_LIMIT_DENY_REASON"
-fi
+    ;;
+  limit)
+    axonflow_pre_deny "$AXONFLOW_LIMIT_DENY_REASON"
+    ;;
+esac
 
 # Call AxonFlow check_policy via MCP server.
 #
@@ -271,7 +307,7 @@ fi
 PRECHECK_REQUEST=$(mktemp)
 PRECHECK_BODY=$(mktemp)
 PRECHECK_HEADERS=$(mktemp)
-trap 'rm -f "$PRECHECK_REQUEST" "$PRECHECK_BODY" "$PRECHECK_HEADERS"' EXIT
+trap 'rm -f "$PRECHECK_REQUEST" "$PRECHECK_BODY" "$PRECHECK_HEADERS"; axonflow_bootstrap_cleanup' EXIT
 
 # The statement reaches jq on stdin and the body reaches curl as a file, never
 # as a command-line argument: an argument has a size limit (about 128 KiB on
@@ -294,6 +330,19 @@ if ! printf '%s' "$STATEMENT" | jq -Rsc --arg ct "$CONNECTOR_TYPE" \
   axonflow_pre_deny "AxonFlow governance blocked: the policy check request for this tool call could not be built, so the call was never checked and is blocked."
 fi
 
+# Community SaaS with no credential after the bootstrap (the registration did
+# not complete: unreachable, refused, rate limited, or out of time): there is
+# nothing to authenticate the check with, so it is no usable answer. No request
+# is sent (it could only be refused as a 401, which would stamp a cooldown and
+# name a variable the user never set), and no stamp is written.
+if [ "${AXONFLOW_MODE:-}" = "community-saas" ] && [ -z "$AUTH" ]; then
+  axonflow_pre_ungoverned "the AxonFlow Community SaaS registration has not completed, so there is no credential to ask the AxonFlow agent at ${ENDPOINT} with"
+fi
+
+REQUEST_TIMEOUT_SECONDS=$(axonflow_budget_timeout "$CONFIGURED_TIMEOUT_SECONDS" 1)
+if [ "$REQUEST_TIMEOUT_SECONDS" -lt 1 ]; then
+  axonflow_pre_ungoverned "the hook's ${_AXONFLOW_HOOK_BUDGET_SECONDS}-second time budget ran out before the AxonFlow agent at ${ENDPOINT} could be asked"
+fi
 HTTP_CODE=$(curl -sS --max-time "$REQUEST_TIMEOUT_SECONDS" \
   -D "$PRECHECK_HEADERS" -o "$PRECHECK_BODY" -w '%{http_code}' \
   -X POST "${ENDPOINT}/api/v1/mcp-server" \
@@ -314,7 +363,7 @@ fi
 # the tool call is BLOCKED: over a hosted Free-tier limit is deny with the
 # visible upgrade prompt, not governance off (ruled 2026-09-14; reversible here).
 if axonflow_handle_envelope_response "$HTTP_CODE" "$PRECHECK_BODY" "$PRECHECK_HEADERS"; then
-  axonflow_pre_deny "$AXONFLOW_LIMIT_DENY_REASON"
+  axonflow_pre_deny "$(axonflow_limit_deny_reason)"
 fi
 
 RESPONSE=$(cat "$PRECHECK_BODY")
@@ -429,7 +478,7 @@ RESULT_IS_ERROR=$(echo "$RESPONSE" | jq -r 'if .result.isError == true then "tru
 HAS_DECISION=$(echo "$TOOL_RESULT" | jq -r 'if (.allowed | type) == "boolean" then "true" else "false" end' 2>/dev/null || echo "false")
 if [ "$RESULT_IS_ERROR" = "true" ] || [ "$HAS_DECISION" != "true" ]; then
   if axonflow_handle_envelope_text "$TOOL_RESULT"; then
-    axonflow_pre_deny "$AXONFLOW_LIMIT_DENY_REASON"
+    axonflow_pre_deny "$(axonflow_limit_deny_reason)"
   fi
   RESULT_ERROR=$(axonflow_result_text "$TOOL_RESULT" '.error // empty')
   axonflow_pre_deny "AxonFlow governance blocked: ${RESULT_ERROR:-the AxonFlow agent returned a policy result without a decision}, so this tool call is blocked."

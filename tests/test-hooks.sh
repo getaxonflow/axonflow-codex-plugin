@@ -185,6 +185,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # fire-and-forget audit call is left alone so its request cannot
         # disturb the check under test.
         http_triggers = [
+            ('LIMIT_FEATURE_ENVELOPE', 403, 'application/json', json.dumps({'jsonrpc': '2.0', 'id': body.get('id'), 'result': {'content': [{'type': 'text', 'text': json.dumps({'error': 'This feature requires Pro.', 'limit_type': 'feature_pro_only', 'tier': 'Free', 'upgrade': {'tier': 'Pro', 'wording': 'FEATURE-WORDING Pro only', 'buy_url': 'https://example.invalid/pricing'}})}], 'isError': True}})),
             ('HTTP_401_JSONRPC', 401, 'application/json', json.dumps({'jsonrpc': '2.0', 'id': body.get('id'), 'error': {'code': -32001, 'message': 'Authentication failed'}})),
             ('HTTP_401_PLAIN', 401, 'application/json', json.dumps({'error': 'invalid client credentials'})),
             ('HTTP_429_PLAIN', 429, 'application/json', json.dumps({'error': 'too many requests'})),
@@ -1467,6 +1468,494 @@ LONG_CONTENT="${LONG_CONTENT}€"
 OUTPUT=$(echo "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"/tmp/test\",\"content\":\"${LONG_CONTENT}\"}}" | "$PRE_HOOK" 2>/dev/null)
 EXIT_CODE=$?
 assert_eq "Exit code is 0 with boundary multi-byte char" "0" "$EXIT_CODE"
+
+# ============================================================
+# Follow-up legs (2026-09-16): the stamp rules, the time budget, harness mode,
+# a PATH with only bash, inputs with nothing to check
+# ============================================================
+
+# run_hook_in <hook> <input json> [env NAME=VALUE ...]: a fresh cache dir,
+# stdout and stderr captured, EXIT_CODE set.
+run_hook_in() {
+    local hook="$1" input="$2"; shift 2
+    CACHE_DIR=$(mktemp -d -t axonflow-followup.XXXXXX)
+    set +e
+    printf '%s' "$input" | env "$@" XDG_CACHE_HOME="$CACHE_DIR" "$hook" >"$CACHE_DIR/stdout" 2>"$CACHE_DIR/stderr"
+    EXIT_CODE=$?
+    set -e
+    STDOUT_OUT=$(cat "$CACHE_DIR/stdout")
+    STDERR_OUT=$(cat "$CACHE_DIR/stderr")
+}
+
+# run_timed <hook> <input file> [env NAME=VALUE ...]
+#   Runs the hook with its stdout and its stderr each read to the end through
+#   a pipe, as a host that reads the hook's output waits for it: a background
+#   child still holding either pipe keeps it open after the hook exits. Sets
+#   EXIT_CODE, EXIT_SECONDS (the hook process exited) and EOF_SECONDS (both
+#   pipes closed), STDOUT_OUT and STDERR_OUT. Uses the caller's CACHE_DIR.
+run_timed() {
+    local hook="$1" input="$2" t0; shift 2
+    t0=$(python3 -c 'import time; print(time.time())')
+    set +e
+    { { env "$@" XDG_CACHE_HOME="$CACHE_DIR" "$hook" <"$input" 2>&1 1>&3 3>&-; echo "$?" >"$CACHE_DIR/rc"; python3 -c 'import time; print(time.time())' >"$CACHE_DIR/exit-at"; } | cat >"$CACHE_DIR/stderr"; } 3>&1 | cat >"$CACHE_DIR/stdout"
+    set -e
+    EOF_SECONDS=$(python3 -c 'import sys, time; print("%.2f" % (time.time() - float(sys.argv[1])))' "$t0")
+    EXIT_SECONDS=$(python3 -c 'import sys; print("%.2f" % (float(open(sys.argv[2]).read()) - float(sys.argv[1])))' "$t0" "$CACHE_DIR/exit-at")
+    EXIT_CODE=$(cat "$CACHE_DIR/rc")
+    STDOUT_OUT=$(cat "$CACHE_DIR/stdout")
+    STDERR_OUT=$(cat "$CACHE_DIR/stderr")
+}
+
+# assert_within_hook_timeout <desc>: both the exit and the end of the output
+# came before hooks/hooks.json's 15 s timeout (fractions of a second).
+assert_within_hook_timeout() {
+    if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 15.0 and float(sys.argv[2]) < 15.0 else 1)' "$EXIT_SECONDS" "$EOF_SECONDS"; then
+        echo "  PASS: $1 → exited at ${EXIT_SECONDS}s and closed its output at ${EOF_SECONDS}s, inside the 15 s hooks.json timeout"
+        ((PASS++)) || true
+    else
+        echo "  FAIL: $1 → exited at ${EXIT_SECONDS}s and closed its output at ${EOF_SECONDS}s; the hooks.json timeout is 15 s"
+        ((FAIL++)) || true
+    fi
+}
+
+PRE_INPUT_JSON='{"tool_name":"Bash","tool_input":{"command":"echo hi"}}'
+POST_INPUT_JSON='{"tool_name":"Bash","tool_input":{"command":"cat data"},"tool_response":"x"}'
+
+echo ""
+echo "--- The stamp rules: which throttle-until stamps gate a governed call ---"
+# scripts/upgrade-prompt.sh, axonflow_governed_stamp. The endpoint is a port
+# nothing listens on, so a hook that sent a request prints the unreachable
+# notice, and a hook that answered locally blocks (pre) or alerts (post). The
+# exact boundaries are unit legs in tests/test-upgrade-prompt.sh (pinned clock).
+if [ "${1:-}" = "--live" ]; then
+    echo "  SKIP: mock-only"
+    ((PASS++)) || true
+else
+    # stamp_leg <limit_type> <deadline offset s> <mtime offset s> <expect: gate|pass>
+    # (STAMP_ENV, word-split, adds env assignments; STAMP_NOTE labels them.)
+    stamp_leg() {
+        local type="$1" deadline_off="$2" mtime_off="$3" expect="$4" now line label hook
+        now=$(date -u +%s)
+        line="$((now + deadline_off)) $type"
+        label="$type stamp, written ${mtime_off}s from now, deadline +${deadline_off}s${STAMP_ENV:+, ${STAMP_NOTE:-$STAMP_ENV}}"
+        for hook in pre post; do
+            CACHE_DIR=$(mktemp -d -t axonflow-stamp.XXXXXX)
+            mkdir -p "$CACHE_DIR/axonflow"
+            echo "$line" > "$CACHE_DIR/axonflow/throttle-until"
+            python3 -c 'import os,sys; t=float(sys.argv[2]); os.utime(sys.argv[1], (t, t))' "$CACHE_DIR/axonflow/throttle-until" "$((now + mtime_off))"
+            set +e
+            if [ "$hook" = "pre" ]; then
+                printf '%s' "$PRE_INPUT_JSON" | env ${STAMP_ENV:-} AXONFLOW_ENDPOINT=http://127.0.0.1:19999 XDG_CACHE_HOME="$CACHE_DIR" "$PRE_HOOK" >"$CACHE_DIR/stdout" 2>"$CACHE_DIR/stderr"
+            else
+                printf '%s' "$POST_INPUT_JSON" | env ${STAMP_ENV:-} AXONFLOW_ENDPOINT=http://127.0.0.1:19999 XDG_CACHE_HOME="$CACHE_DIR" "$POST_HOOK" >"$CACHE_DIR/stdout" 2>"$CACHE_DIR/stderr"
+            fi
+            EXIT_CODE=$?
+            set -e
+            if [ "$hook" = "pre" ] && [ "$expect" = "gate" ]; then
+                assert_eq "pre, $label → gates (exit 2)" "2" "$EXIT_CODE"
+                assert_empty "pre, $label → no request was sent" "$(grep 'could not be reached' "$CACHE_DIR/stderr" || true)"
+            elif [ "$hook" = "pre" ]; then
+                assert_eq "pre, $label → gates nothing (exit 0)" "0" "$EXIT_CODE"
+                assert_contains "pre, $label → the request was sent (the unreachable notice)" "$(cat "$CACHE_DIR/stderr")" "could not be reached"
+            elif [ "$expect" = "gate" ]; then
+                assert_contains "post, $label → the alert, with no request" "$(cat "$CACHE_DIR/stdout")" "GOVERNANCE ALERT"
+                assert_empty "post, $label → no request was sent" "$(grep 'could not be reached' "$CACHE_DIR/stderr" || true)"
+            else
+                assert_empty "post, $label → no alert" "$(cat "$CACHE_DIR/stdout")"
+                assert_contains "post, $label → the request was sent (the notice)" "$(cat "$CACHE_DIR/stderr")" "could not be reached"
+            fi
+            assert_eq "$hook, $label → the stamp is left on disk as written" "$line" "$(cat "$CACHE_DIR/axonflow/throttle-until" 2>/dev/null)"
+            rm -rf "$CACHE_DIR"
+        done
+    }
+    # Rules 1 and 3: a request-rate limit gates, for at most 300 s after it was written.
+    stamp_leg daily_quota 3600 0 gate
+    stamp_leg per_minute 60 -10 gate
+    stamp_leg daily_quota 3600 -600 pass
+    stamp_leg per_minute 3600 -3600 pass
+    # Rule 2: a feature or object-count limit gates nothing, whatever its deadline.
+    stamp_leg feature_pro_only 60 0 pass
+    stamp_leg active_policies 60 0 pass
+    stamp_leg hitl_approvals_window 604800 0 pass
+    stamp_leg decision_list_size 60 0 pass
+    # Rule 4: a stamp written in the future past the skew allowance is past the cap.
+    stamp_leg daily_quota 86400 86400 pass
+    # Rule 6: the auth_failure cooldown gates for this hook's configured length
+    # from when its file was written, whatever deadline the file carries.
+    stamp_leg auth_failure 604800 0 gate
+    stamp_leg auth_failure 604800 -1200 pass
+    stamp_leg auth_failure 3600 86400 pass
+    STAMP_ENV="AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS=1800" stamp_leg auth_failure 3600 -1200 gate
+    # An unknown type gates nothing and is left alone.
+    stamp_leg some_future_limit 3600 0 pass
+    # A stamp whose modification time cannot be read gates nothing: stat fails.
+    STAT_SHIM=$(mktemp -d -t axonflow-statshim.XXXXXX)
+    printf '#!/bin/sh\nexit 1\n' >"$STAT_SHIM/stat"
+    chmod +x "$STAT_SHIM/stat"
+    STAT_PATH="$STAT_SHIM:$(dirname "$(command -v jq)"):$(dirname "$(command -v curl)"):/usr/bin:/bin"
+    STAMP_NOTE="stat cannot read the file" STAMP_ENV="PATH=$STAT_PATH" stamp_leg daily_quota 3600 0 pass
+    STAMP_NOTE="stat cannot read the file" STAMP_ENV="PATH=$STAT_PATH" stamp_leg auth_failure 3600 0 pass
+    rm -rf "$STAT_SHIM"
+
+    # A feature limit does not reset with time, and its deny does not say it will.
+    run_hook_in "$PRE_HOOK" '{"tool_name":"Bash","tool_input":{"command":"LIMIT_FEATURE_ENVELOPE test"}}'
+    assert_eq "pre a feature_pro_only envelope → exit 2" "2" "$EXIT_CODE"
+    assert_contains "pre a feature_pro_only envelope → names the limit" "$STDERR_OUT" "Free-tier limit (feature_pro_only)"
+    assert_empty "pre a feature_pro_only envelope → does not say the limit resets" "$(grep 'until the limit resets' "$CACHE_DIR/stderr" || true)"
+    rm -rf "$CACHE_DIR"
+fi
+
+echo ""
+echo "--- The time budget: every hook answers inside the hooks.json timeout ---"
+if [ "${1:-}" = "--live" ]; then
+    echo "  SKIP: mock-only"
+    ((PASS++)) || true
+else
+    BUDGET=$(sed -n 's/^_AXONFLOW_HOOK_BUDGET_SECONDS=\([0-9][0-9]*\)$/\1/p' "$PLUGIN_DIR/scripts/lib/failure-posture.sh")
+    for t in $(jq -r '.. | objects | select(has("timeout")) | .timeout' "$PLUGIN_DIR/hooks/hooks.json"); do
+        if [ -n "$BUDGET" ] && [ "$BUDGET" -lt "$t" ]; then
+            echo "  PASS: the ${BUDGET}-second hook budget is below the hooks.json timeout ($t)"
+            ((PASS++)) || true
+        else
+            echo "  FAIL: the hook budget ('$BUDGET') is not below the hooks.json timeout ($t)"
+            ((FAIL++)) || true
+        fi
+    done
+    assert_eq "the budget helper: 5 s with 4 held back at second 10 → 0 (no registration)" "0" "$(bash -c '. "$1"; SECONDS=10; axonflow_budget_timeout 5 4' _ "$PLUGIN_DIR/scripts/lib/failure-posture.sh")"
+    assert_eq "the budget helper: 8 s at second 0 → 8" "8" "$(bash -c '. "$1"; axonflow_budget_timeout 8 1' _ "$PLUGIN_DIR/scripts/lib/failure-posture.sh")"
+    assert_eq "the budget helper: 60 s at second 3 → 9" "9" "$(bash -c '. "$1"; SECONDS=3; axonflow_budget_timeout 60 1' _ "$PLUGIN_DIR/scripts/lib/failure-posture.sh")"
+    # Every script a hook starts in the background gives up the hook's stdout
+    # (and the audit call its stderr too): a background child holding a pipe
+    # keeps the hook's output open after the hook exits.
+    BG_LAUNCHES=$(cat "$PRE_HOOK" "$POST_HOOK" | grep -cE '^[[:space:]]*("\$\{SCRIPT_DIR\}/[^"]*"|\)).*&[[:space:]]*$' || true)
+    assert_eq "the hooks start three background jobs (telemetry, version check, audit record)" "3" "$BG_LAUNCHES"
+    for h in "$PRE_HOOK" "$POST_HOOK"; do
+        while IFS= read -r line; do
+            case "$line" in
+                *'>/dev/null'*) echo "  PASS: $(basename "$h"): the background launch gives up stdout: $line"; ((PASS++)) || true ;;
+                *) echo "  FAIL: $(basename "$h"): a background launch keeps the hook's stdout: $line"; ((FAIL++)) || true ;;
+            esac
+        done < <(grep -E '^[[:space:]]*("\$\{SCRIPT_DIR\}/[^"]*"|\)).*&[[:space:]]*$' "$h" || true)
+    done
+    HANG_PORT_FILE=$(mktemp)
+    python3 -c '
+import socket, sys
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 0)); s.listen(64)
+open(sys.argv[1], "w").write(str(s.getsockname()[1]))
+held = []
+while True:
+    c, _ = s.accept(); held.append(c)
+' "$HANG_PORT_FILE" &
+    HANG_PID=$!
+    for _ in $(seq 1 50); do [ -s "$HANG_PORT_FILE" ] && break; sleep 0.1; done
+    HANG_PORT=$(cat "$HANG_PORT_FILE")
+    TIMED_IN=$(mktemp)
+    for hook in pre post; do
+        CACHE_DIR=$(mktemp -d -t axonflow-budget.XXXXXX)
+        if [ "$hook" = "pre" ]; then H="$PRE_HOOK"; printf '%s' "$PRE_INPUT_JSON" >"$TIMED_IN"; else H="$POST_HOOK"; printf '%s' "$POST_INPUT_JSON" >"$TIMED_IN"; fi
+        run_timed "$H" "$TIMED_IN" AXONFLOW_ENDPOINT="http://127.0.0.1:$HANG_PORT" AXONFLOW_TIMEOUT_SECONDS=60
+        assert_within_hook_timeout "$hook against an agent that never answers, AXONFLOW_TIMEOUT_SECONDS=60"
+        assert_eq "$hook against an agent that never answers → exit 0 (AXONFLOW_FAIL_MODE unset)" "0" "$EXIT_CODE"
+        assert_contains "$hook against an agent that never answers → the notice names it" "$STDERR_OUT" "GOVERNANCE UNAVAILABLE"
+        rm -rf "$CACHE_DIR"
+    done
+    # Community-saas mode with both the registration and the agent hanging
+    # (harness URLs on the hang listener, a scratch HOME): the registration
+    # takes at most 5 s and the check the rest of the budget.
+    for hook in pre post; do
+        CACHE_DIR=$(mktemp -d -t axonflow-budget.XXXXXX)
+        mkdir -p "$CACHE_DIR/home" "$CACHE_DIR/config"
+        if [ "$hook" = "pre" ]; then H="$PRE_HOOK"; printf '%s' "$PRE_INPUT_JSON" >"$TIMED_IN"; else H="$POST_HOOK"; printf '%s' "$POST_INPUT_JSON" >"$TIMED_IN"; fi
+        run_timed "$H" "$TIMED_IN" -u AXONFLOW_ENDPOINT -u AXONFLOW_AUTH HOME="$CACHE_DIR/home" AXONFLOW_CONFIG_DIR="$CACHE_DIR/config" \
+            AXONFLOW_HARNESS=1 AXONFLOW_HARNESS_REGISTER_URL="http://127.0.0.1:$HANG_PORT/api/v1/register" \
+            AXONFLOW_HARNESS_AGENT_ENDPOINT="http://127.0.0.1:$HANG_PORT" AXONFLOW_FAIL_MODE=closed
+        assert_within_hook_timeout "$hook in community-saas mode with the registration and the agent both hanging, AXONFLOW_FAIL_MODE=closed"
+        if [ "$hook" = "pre" ]; then
+            assert_eq "pre, registration and agent both hanging, closed → exit 2" "2" "$EXIT_CODE"
+        else
+            assert_contains "post, registration and agent both hanging, closed → the alert" "$STDOUT_OUT" "GOVERNANCE ALERT"
+        fi
+        rm -rf "$CACHE_DIR"
+    done
+    # A post hook with nothing to scan exits at once, while its audit record
+    # goes to the agent that never answers: the audit call must not hold the
+    # hook's output open after the hook exits.
+    CACHE_DIR=$(mktemp -d -t axonflow-emptyout.XXXXXX)
+    printf '%s' '{"tool_name":"Bash","tool_input":{"command":"true"},"tool_response":""}' >"$TIMED_IN"
+    run_timed "$POST_HOOK" "$TIMED_IN" AXONFLOW_ENDPOINT="http://127.0.0.1:$HANG_PORT" AXONFLOW_TIMEOUT_SECONDS=60
+    if python3 -c 'import sys; sys.exit(0 if float(sys.argv[2]) - float(sys.argv[1]) < 2.0 else 1)' "$EXIT_SECONDS" "$EOF_SECONDS"; then
+        echo "  PASS: post with nothing to scan → exited at ${EXIT_SECONDS}s and its output closed at ${EOF_SECONDS}s (the background audit call holds no output)"
+        ((PASS++)) || true
+    else
+        echo "  FAIL: post with nothing to scan → exited at ${EXIT_SECONDS}s but its output stayed open until ${EOF_SECONDS}s (a background call holds the hook's output)"
+        ((FAIL++)) || true
+    fi
+    rm -rf "$CACHE_DIR"
+    rm -f "$TIMED_IN"
+    kill "$HANG_PID" 2>/dev/null || true
+    wait "$HANG_PID" 2>/dev/null || true
+    rm -f "$HANG_PORT_FILE"
+fi
+
+echo ""
+echo "--- Harness community-saas mode: every request goes to the harness, never production ---"
+# With no endpoint and no credential the hooks and scripts/recover.sh run in
+# community-saas mode, whose endpoint is production. AXONFLOW_HARNESS=1 with
+# AXONFLOW_HARNESS_REGISTER_URL and AXONFLOW_HARNESS_AGENT_ENDPOINT points them
+# at local listeners. A curl first on PATH records every call's arguments and
+# refuses (and logs) any URL whose host is not loopback. The post hook and
+# recover.sh used to ignore the agent override.
+if [ "${1:-}" = "--live" ]; then
+    echo "  SKIP: mock-only"
+    ((PASS++)) || true
+else
+    HARNESS_DIR=$(mktemp -d -t axonflow-harness.XXXXXX)
+    REAL_CURL=$(command -v curl)
+    cat >"$HARNESS_DIR/curl" <<CURLWRAP
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$HARNESS_DIR/curl-args.log"
+for a in "\$@"; do
+  case "\$a" in
+    http://*|https://*)
+      host=\$(printf '%s' "\$a" | sed -E 's#^[a-z]+://##; s#[:/?].*\$##')
+      case "\$host" in
+        127.0.0.1|localhost) ;;
+        *) printf '%s\n' "\$a" >>"$HARNESS_DIR/refused.log"; exit 7 ;;
+      esac
+      ;;
+  esac
+done
+exec "$REAL_CURL" "\$@"
+CURLWRAP
+    chmod +x "$HARNESS_DIR/curl"
+    : >"$HARNESS_DIR/refused.log"
+    : >"$HARNESS_DIR/curl-args.log"
+    REC_LOG="$HARNESS_DIR/requests.log"
+    : >"$REC_LOG"
+    cat >"$HARNESS_DIR/recorder.py" <<'RECORDER'
+import http.server, json, sys, os
+port_file, log_file, state_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _send(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code); self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+    def do_GET(self):
+        with open(log_file, 'a') as f: f.write('GET %s\n' % self.path)
+        self._send(200, {'status': 'healthy', 'version': '11.0.0'})
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length') or 0); raw = self.rfile.read(n)
+        with open(log_file, 'a') as f: f.write('POST %s\n' % self.path)
+        if self.path == '/api/v1/register':
+            if os.path.exists(os.path.join(state_dir, 'register-ok')):
+                return self._send(201, {'tenant_id': 'cs_harness', 'secret': 'harness-secret', 'expires_at': '2099-01-01T00:00:00Z'})
+            return self._send(503, {'error': 'registration unavailable'})
+        if self.path == '/api/v1/recover':
+            return self._send(202, {'message': 'If an account exists, a link was sent.'})
+        if self.path == '/api/v1/recover/verify':
+            return self._send(200, {'tenant_id': 'cs_recovered', 'secret': 'recovered-secret', 'expires_at': '2099-01-01T00:00:00Z'})
+        try: rid = json.loads(raw).get('id')
+        except Exception: rid = None
+        return self._send(200, {'jsonrpc': '2.0', 'id': rid, 'result': {'content': [{'type': 'text', 'text': json.dumps({'allowed': True, 'policies_evaluated': 1})}]}})
+s = http.server.ThreadingHTTPServer(('127.0.0.1', 0), H)
+open(port_file, 'w').write(str(s.server_address[1])); s.serve_forever()
+RECORDER
+    python3 "$HARNESS_DIR/recorder.py" "$HARNESS_DIR/rec.port" "$REC_LOG" "$HARNESS_DIR" &
+    REC_PID=$!
+    for _ in $(seq 1 50); do [ -s "$HARNESS_DIR/rec.port" ] && break; sleep 0.1; done
+    REC_PORT=$(cat "$HARNESS_DIR/rec.port")
+    mkdir -p "$HARNESS_DIR/flockbin"
+    printf '#!/bin/sh\nexit 0\n' >"$HARNESS_DIR/flockbin/flock"
+    chmod +x "$HARNESS_DIR/flockbin/flock"
+
+    # harness_env <NAME=VALUE ...> <command ...>: harness community-saas mode
+    # with a scratch HOME, cache and config under $CACHE_DIR.
+    harness_env() {
+        env -u AXONFLOW_ENDPOINT -u AXONFLOW_AUTH -u AXONFLOW_USER_TOKEN -u AXONFLOW_LICENSE_TOKEN \
+            PATH="$HARNESS_DIR:$PATH" HOME="$CACHE_DIR/home" XDG_CACHE_HOME="$CACHE_DIR" AXONFLOW_CONFIG_DIR="$CACHE_DIR/config" \
+            AXONFLOW_TELEMETRY=off AXONFLOW_PLUGIN_VERSION_CHECK=off \
+            AXONFLOW_HARNESS=1 AXONFLOW_HARNESS_REGISTER_URL="http://127.0.0.1:$REC_PORT/api/v1/register" \
+            "$@"
+    }
+
+    # 1. The registration completes: both hooks ask the harness agent (the
+    #    mock, which blocks), and the registration's --max-time is the hook's 5 s.
+    touch "$HARNESS_DIR/register-ok"
+    for hook in pre post; do
+        CACHE_DIR=$(mktemp -d -t axonflow-harness.XXXXXX)
+        mkdir -p "$CACHE_DIR/home" "$CACHE_DIR/config"
+        : >"$HARNESS_DIR/curl-args.log"
+        if [ "$hook" = "pre" ]; then
+            printf '%s' '{"tool_name":"Bash","tool_input":{"command":"BLOCKED harness"}}' >"$CACHE_DIR/in.json"; H="$PRE_HOOK"
+        else
+            printf '%s' '{"tool_name":"Bash","tool_input":{"command":"cat data"},"tool_response":"BLOCKED_OUTPUT harness"}' >"$CACHE_DIR/in.json"; H="$POST_HOOK"
+        fi
+        set +e
+        harness_env AXONFLOW_HARNESS_AGENT_ENDPOINT="http://127.0.0.1:$MOCK_PORT" "$H" <"$CACHE_DIR/in.json" >"$CACHE_DIR/stdout" 2>"$CACHE_DIR/stderr"
+        EXIT_CODE=$?
+        set -e
+        if [ "$hook" = "pre" ]; then
+            assert_eq "pre in harness community-saas mode → the check reached the harness agent and its block came back (exit 2)" "2" "$EXIT_CODE"
+            assert_contains "pre in harness community-saas mode → the policy violation" "$(cat "$CACHE_DIR/stderr")" "policy violation"
+        else
+            assert_contains "post in harness community-saas mode → the scan reached the harness agent and its block came back" "$(cat "$CACHE_DIR/stdout")" "Output policy violation"
+        fi
+        if [ "$hook" = "post" ]; then
+            # The audit record goes in the background: give its curl a moment to start.
+            for _ in $(seq 1 20); do [ "$(grep -c 'mcp-server' "$HARNESS_DIR/curl-args.log")" -ge 2 ] && break; sleep 0.1; done
+        fi
+        MCP_CALLS=$(grep -c 'mcp-server' "$HARNESS_DIR/curl-args.log" || true)
+        OVER_BUDGET=$(grep 'mcp-server' "$HARNESS_DIR/curl-args.log" | sed -nE 's/.*--max-time ([0-9]+).*/\1/p' | awk '$1 > 13' | wc -l | tr -d ' ')
+        assert_eq "$hook in harness community-saas mode → every request to the agent has a --max-time within the 13 s budget ($MCP_CALLS requests)" "0" "$OVER_BUDGET"
+        [ "$hook" = "post" ] && assert_eq "post in harness community-saas mode → both the audit record and the scan were sent" "2" "$MCP_CALLS"
+        assert_contains "$hook in harness community-saas mode → the registration request carries --max-time 5 (the hook's budget)" "$(grep -F '/api/v1/register' "$HARNESS_DIR/curl-args.log" || true)" "max-time 5 "
+        rm -rf "$CACHE_DIR"
+    done
+
+    # 2. The registration fails (503): no credential, so no usable answer. No
+    #    request reaches the agent, no stamp is written, the bootstrap's lock
+    #    is released, and (with a stand-in flock, the Linux path) the hook's
+    #    stderr still carries the notice.
+    rm -f "$HARNESS_DIR/register-ok"
+    for hook in pre post closed pre-flock; do
+        CACHE_DIR=$(mktemp -d -t axonflow-harness.XXXXXX)
+        mkdir -p "$CACHE_DIR/home" "$CACHE_DIR/config"
+        : >"$REC_LOG"
+        case "$hook" in
+            post) printf '%s' "$POST_INPUT_JSON" >"$CACHE_DIR/in.json"; H="$POST_HOOK" ;;
+            *) printf '%s' "$PRE_INPUT_JSON" >"$CACHE_DIR/in.json"; H="$PRE_HOOK" ;;
+        esac
+        EXTRA=()
+        [ "$hook" = "closed" ] && EXTRA=(AXONFLOW_FAIL_MODE=closed)
+        [ "$hook" = "pre-flock" ] && EXTRA=(PATH="$HARNESS_DIR/flockbin:$HARNESS_DIR:$PATH")
+        set +e
+        harness_env AXONFLOW_HARNESS_AGENT_ENDPOINT="http://127.0.0.1:$REC_PORT" ${EXTRA[@]+"${EXTRA[@]}"} "$H" <"$CACHE_DIR/in.json" >"$CACHE_DIR/stdout" 2>"$CACHE_DIR/stderr"
+        EXIT_CODE=$?
+        set -e
+        case "$hook" in
+            pre|pre-flock)
+                assert_eq "$hook, no credential after the bootstrap → exit 0 (AXONFLOW_FAIL_MODE unset)" "0" "$EXIT_CODE"
+                assert_contains "$hook, no credential after the bootstrap → the stderr notice names the registration" "$(cat "$CACHE_DIR/stderr")" "registration has not completed"
+                ;;
+            post)
+                assert_empty "post, no credential after the bootstrap → no alert" "$(cat "$CACHE_DIR/stdout")"
+                assert_contains "post, no credential after the bootstrap → the notice names the registration" "$(cat "$CACHE_DIR/stderr")" "registration has not completed"
+                ;;
+            closed)
+                assert_eq "pre, no credential after the bootstrap, AXONFLOW_FAIL_MODE=closed → exit 2" "2" "$EXIT_CODE"
+                ;;
+        esac
+        assert_contains "$hook, registration refused → the registration was attempted" "$(cat "$REC_LOG")" "POST /api/v1/register"
+        assert_empty "$hook, registration refused → no request reached the agent" "$(grep -F '/api/v1/mcp-server' "$REC_LOG" || true)"
+        assert_file_not_exists "$hook, registration refused → no cooldown stamp" "$CACHE_DIR/axonflow/throttle-until"
+        # (the bootstrap keeps its lock under $HOME/.config/axonflow)
+        if [ -d "$CACHE_DIR/home/.config/axonflow/try-registration.lock.d" ] || [ -d "$CACHE_DIR/config/try-registration.lock.d" ]; then
+            echo "  FAIL: $hook, registration refused → the bootstrap's lock directory was left behind"
+            ((FAIL++)) || true
+        else
+            echo "  PASS: $hook, registration refused → no bootstrap lock directory is left behind"
+            ((PASS++)) || true
+        fi
+        rm -rf "$CACHE_DIR"
+    done
+
+    # 3. The recovery command, in the same mode: it asks the harness agent.
+    CACHE_DIR=$(mktemp -d -t axonflow-harness.XXXXXX)
+    mkdir -p "$CACHE_DIR/home" "$CACHE_DIR/config"
+    : >"$REC_LOG"
+    harness_env AXONFLOW_HARNESS_AGENT_ENDPOINT="http://127.0.0.1:$REC_PORT" AXONFLOW_RECOVER_EMAIL="harness@axonflow-test.invalid" \
+        bash "$PLUGIN_DIR/scripts/recover.sh" request </dev/null >/dev/null 2>&1 || true
+    harness_env AXONFLOW_HARNESS_AGENT_ENDPOINT="http://127.0.0.1:$REC_PORT" AXONFLOW_RECOVER_TOKEN="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+        bash "$PLUGIN_DIR/scripts/recover.sh" verify </dev/null >/dev/null 2>&1 || true
+    assert_contains "recover.sh request in harness community-saas mode → its request reached the harness agent" "$(cat "$REC_LOG")" "POST /api/v1/recover$"
+    assert_contains "recover.sh verify in harness community-saas mode → its request reached the harness agent" "$(cat "$REC_LOG")" "POST /api/v1/recover/verify"
+    rm -rf "$CACHE_DIR"
+
+    kill "$REC_PID" 2>/dev/null || true
+    wait "$REC_PID" 2>/dev/null || true
+    assert_empty "harness community-saas mode → no request left loopback (refused: $(tr '\n' ' ' <"$HARNESS_DIR/refused.log"))" "$(cat "$HARNESS_DIR/refused.log")"
+    rm -rf "$HARNESS_DIR"
+fi
+
+echo ""
+echo "--- A PATH with only bash, exported functions, inputs with nothing to check ---"
+if [ "${1:-}" = "--live" ]; then
+    echo "  SKIP: mock-only"
+    ((PASS++)) || true
+else
+    # No jq, tr or sed: AXONFLOW_FAIL_MODE is read with builtins (closed still
+    # blocks) and the post hook's alert is one valid JSON document.
+    SHIM=$(mktemp -d -t axonflow-bashonly.XXXXXX)
+    ln -s "$(command -v bash)" "$SHIM/bash"
+    for hook in pre post; do
+        for mode in closed CLOSED unset; do
+            CACHE_DIR=$(mktemp -d -t axonflow-bashonly.XXXXXX)
+            if [ "$hook" = "pre" ]; then H="$PRE_HOOK"; IN="$PRE_INPUT_JSON"; else H="$POST_HOOK"; IN="$POST_INPUT_JSON"; fi
+            set +e
+            if [ "$mode" = "unset" ]; then
+                printf '%s' "$IN" | env -u AXONFLOW_FAIL_MODE PATH="$SHIM" XDG_CACHE_HOME="$CACHE_DIR" "$SHIM/bash" "$H" >"$CACHE_DIR/stdout" 2>"$CACHE_DIR/stderr"
+            else
+                printf '%s' "$IN" | env PATH="$SHIM" AXONFLOW_FAIL_MODE="$mode" XDG_CACHE_HOME="$CACHE_DIR" "$SHIM/bash" "$H" >"$CACHE_DIR/stdout" 2>"$CACHE_DIR/stderr"
+            fi
+            EXIT_CODE=$?
+            set -e
+            if [ "$hook" = "pre" ] && [ "$mode" != "unset" ]; then
+                assert_eq "pre with only bash on PATH, AXONFLOW_FAIL_MODE=$mode → exit 2" "2" "$EXIT_CODE"
+                assert_contains "pre with only bash on PATH, AXONFLOW_FAIL_MODE=$mode → names jq" "$(cat "$CACHE_DIR/stderr")" "needs jq"
+            elif [ "$hook" = "pre" ]; then
+                assert_eq "pre with only bash on PATH, AXONFLOW_FAIL_MODE unset → exit 0" "0" "$EXIT_CODE"
+                assert_contains "pre with only bash on PATH → the notice names jq" "$(cat "$CACHE_DIR/stderr")" "needs jq"
+            elif [ "$mode" != "unset" ]; then
+                assert_eq "post with only bash on PATH, AXONFLOW_FAIL_MODE=$mode → one valid JSON document" "1" "$(jq -s 'length' "$CACHE_DIR/stdout" 2>/dev/null || echo invalid)"
+                assert_contains "post with only bash on PATH, AXONFLOW_FAIL_MODE=$mode → the alert names jq" "$(jq -r '.hookSpecificOutput.additionalContext // empty' "$CACHE_DIR/stdout" 2>/dev/null || true)" "needs jq"
+            else
+                assert_empty "post with only bash on PATH, AXONFLOW_FAIL_MODE unset → no alert" "$(cat "$CACHE_DIR/stdout")"
+            fi
+            rm -rf "$CACHE_DIR"
+        done
+    done
+
+    # The post hook's alert without jq is built by hand: a quote, a backslash
+    # and control characters in the message still give one valid JSON
+    # document, whose text is the message with the control characters dropped.
+    ALERT_FN=$(mktemp -t axonflow-alertfn.XXXXXX)
+    sed -n '/^axonflow_post_alert() {$/,/^}$/p' "$POST_HOOK" >"$ALERT_FN"
+    ALERT_OUT=$(env PATH="$SHIM" "$SHIM/bash" -c '. "$1"; axonflow_post_alert "$2"' _ "$ALERT_FN" "$(printf 'say "no" to C:\\tmp\there\nand\033[2Kthere')")
+    assert_eq "the alert without jq, a message with a quote, a backslash and control characters → one valid JSON document" "1" "$(printf '%s' "$ALERT_OUT" | jq -s 'length' 2>/dev/null || echo invalid)"
+    assert_eq "the alert without jq → the message, control characters dropped" "$(printf 'say "no" to C:\\tmphereand[2Kthere')" "$(printf '%s' "$ALERT_OUT" | jq -r '.hookSpecificOutput.additionalContext' 2>/dev/null)"
+    rm -f "$ALERT_FN"
+
+    rm -rf "$SHIM"
+
+    # Shell functions exported from the user's environment under the
+    # bootstrap's cleanup names (and its marker) are never called.
+    for leg in allow deny; do
+        if [ "$leg" = "allow" ]; then IN="$PRE_INPUT_JSON"; else IN='{"tool_name":"Bash","tool_input":{"command":"BLOCKED exported"}}'; fi
+        run_hook_in "$PRE_HOOK" "$IN" 'BASH_FUNC__axonflow_bootstrap_cleanup_on_exit%%=() {  echo leaked-private; }' 'BASH_FUNC_cleanup_on_exit%%=() {  echo leaked-old; }' _AXONFLOW_BOOTSTRAP_TRAP=1
+        if [ "$leg" = "allow" ]; then
+            assert_eq "an allow with cleanup functions exported from the environment → exit 0" "0" "$EXIT_CODE"
+        else
+            assert_eq "a deny with cleanup functions exported from the environment → exit 2" "2" "$EXIT_CODE"
+        fi
+        assert_empty "$leg with cleanup functions exported from the environment → no exported function ran" "$(grep -E 'leaked' "$CACHE_DIR/stdout" "$CACHE_DIR/stderr" || true)"
+        rm -rf "$CACHE_DIR"
+    done
+
+    # An input with nothing to check is still checked: against an agent that
+    # is not there, a checked call gets the unreachable notice; a skipped one
+    # would be silent.
+    for input in '{"tool_name":"Bash","tool_input":{"command":"null"}}' '{"tool_name":"Bash","tool_input":{"command":"{}"}}' '{"tool_name":"exec_command","tool_input":{}}' '{"tool_name":"mcp__db__drop","tool_input":{}}'; do
+        run_hook_in "$PRE_HOOK" "$input" AXONFLOW_ENDPOINT=http://127.0.0.1:19999
+        assert_eq "nothing to check ($input) → exit 0" "0" "$EXIT_CODE"
+        assert_contains "nothing to check ($input) → checked (the unreachable notice), not skipped" "$STDERR_OUT" "could not be reached"
+        rm -rf "$CACHE_DIR"
+    done
+    run_hook_in "$PRE_HOOK" '{"tool_name":"mcp__db__BLOCKED_drop","tool_input":{}}'
+    assert_eq "an MCP call with no arguments → the tool name reaches the policy check (exit 2)" "2" "$EXIT_CODE"
+    rm -rf "$CACHE_DIR"
+fi
 
 # ============================================================
 # Static Checks (v0.3.0)

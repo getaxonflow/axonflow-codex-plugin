@@ -27,13 +27,24 @@ fi
 SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 
 # Emit a PostToolUse governance alert and stop. Without jq the JSON is written
-# by hand; the message is this script's own text, and double quotes and
-# backslashes are dropped from it so the document stays valid.
+# by hand with builtins only (this runs when jq is missing, on a PATH that may
+# hold nothing else): backslashes and double quotes are escaped and control
+# characters dropped, so the document stays valid.
 axonflow_post_alert() {
   if command -v jq &>/dev/null; then
     jq -n --arg m "$1" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $m}}'
   else
-    printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s"}}\n' "$(printf '%s' "$1" | tr -d '"\\')"
+    local s="$1" out="" c i
+    for ((i = 0; i < ${#s}; i++)); do
+      c="${s:i:1}"
+      case "$c" in
+        \\) out="${out}\\\\" ;;
+        '"') out="${out}\\\"" ;;
+        [[:cntrl:]]) ;;
+        *) out="${out}${c}" ;;
+      esac
+    done
+    printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s"}}\n' "$out"
   fi
   exit 0
 }
@@ -75,17 +86,32 @@ fi
 if [ -z "${AXONFLOW_ENDPOINT:-}" ] && [ -z "${AXONFLOW_AUTH:-}" ]; then
   ENDPOINT="https://try.getaxonflow.com"
   AXONFLOW_MODE="community-saas"
+  # Test-harness override, as in pre-tool-check.sh: production code paths leave
+  # AXONFLOW_HARNESS unset and the endpoint stays pinned
+  # (tests/test-hooks.sh, the harness community-saas legs).
+  if [ "${AXONFLOW_HARNESS:-}" = "1" ] && [ -n "${AXONFLOW_HARNESS_AGENT_ENDPOINT:-}" ]; then
+    ENDPOINT="$AXONFLOW_HARNESS_AGENT_ENDPOINT"
+  fi
 else
   ENDPOINT="${AXONFLOW_ENDPOINT:-http://localhost:8080}"
   AXONFLOW_MODE="self-hosted"
 fi
 export AXONFLOW_MODE
-REQUEST_TIMEOUT_SECONDS="${AXONFLOW_TIMEOUT_SECONDS:-5}"
+# The configured per-request timeout (a positive integer; anything else is the
+# default). The scan itself gets no more than the hook's time budget leaves.
+CONFIGURED_TIMEOUT_SECONDS="${AXONFLOW_TIMEOUT_SECONDS:-5}"
+case "$CONFIGURED_TIMEOUT_SECONDS" in ''|*[!0-9]*|0) CONFIGURED_TIMEOUT_SECONDS=5 ;; esac
+REQUEST_TIMEOUT_SECONDS="$CONFIGURED_TIMEOUT_SECONDS"
 
 # Bootstrap the Community-SaaS credential if needed. No-op in self-hosted mode.
 # Pre-tool-check ran first and likely already wrote the registration file; this
 # is just loading it. Mode-clarity log line is intentionally NOT repeated here —
 # pre-tool-check fires it once per hook invocation.
+_AXONFLOW_REGISTER_MAX_TIME=$(axonflow_budget_timeout 5 4)
+# Only this run's bootstrap may define its cleanup: nothing of that name from
+# the environment (an exported shell function) is ever called.
+unset _AXONFLOW_BOOTSTRAP_TRAP
+unset -f _axonflow_bootstrap_cleanup_on_exit 2>/dev/null
 # shellcheck disable=SC1091
 . "${SCRIPT_DIR}/community-saas-bootstrap.sh"
 AUTH="${AXONFLOW_AUTH:-}"
@@ -106,13 +132,17 @@ AUTH_ALERT="GOVERNANCE ALERT: AxonFlow could not check this tool output (the Axo
 # locally until the deadline passes. The output cannot be checked while either
 # stamp holds, so the model is told not to use it: a hosted Free-tier limit
 # (ruled 2026-09-14) or the 401 cooldown (auth_failure).
-if axonflow_throttle_active; then
-  if [ "$(axonflow_throttle_reason)" = "auth_failure" ]; then
+# Which stamps gate follows the stamp rules in scripts/upgrade-prompt.sh
+# (axonflow_governed_stamp).
+case "$(axonflow_governed_stamp)" in
+  auth_failure)
     echo "[AxonFlow] $(axonflow_auth_cooldown_note)" >&2
     axonflow_post_alert "$AUTH_ALERT"
-  fi
-  axonflow_post_alert "$AXONFLOW_LIMIT_POST_ALERT"
-fi
+    ;;
+  limit)
+    axonflow_post_alert "$AXONFLOW_LIMIT_POST_ALERT"
+    ;;
+esac
 
 AUTH_HEADER=()
 if [ -n "$AUTH" ]; then
@@ -177,9 +207,26 @@ if [ "$SUCCESS" != "true" ] && [ "$SUCCESS" != "false" ]; then
   SUCCESS=true
 fi
 
+# Community SaaS with no credential after the bootstrap (the registration did
+# not complete): there is nothing to authenticate the check with, so it is no
+# usable answer. No request is sent (neither the audit record nor the scan;
+# either could only be refused as a 401, which would stamp a cooldown), and no
+# stamp is written.
+if [ "${AXONFLOW_MODE:-}" = "community-saas" ] && [ -z "$AUTH" ]; then
+  axonflow_post_ungoverned "the AxonFlow Community SaaS registration has not completed, so there is no credential to ask the AxonFlow agent at ${ENDPOINT} with"
+fi
+
+# The audit call runs in the background with its own output on /dev/null, so
+# it holds none of the hook's output open (a host reading the hook's output to
+# its end would otherwise wait for it), and it gets no more than the hook's
+# time budget leaves.
+AUDIT_TIMEOUT_SECONDS=$(axonflow_budget_timeout "$CONFIGURED_TIMEOUT_SECONDS" 1)
+
 # 1. Record audit entry (fire-and-forget, background). The record is built from
 # the hook input on stdin, so no field of any size becomes a command-line
 # argument; the output summary is the first 500 characters of the response.
+# With no budget left it is not sent (curl reads --max-time 0 as no limit).
+if [ "$AUDIT_TIMEOUT_SECONDS" -ge 1 ]; then
 (
   printf '%s' "$INPUT" | jq -c \
       --argjson success "$SUCCESS" \
@@ -199,12 +246,13 @@ fi
             error_message: (if (.tool_response | type) == "object" then (.tool_response.stderr // "") else "" end)
           }
         }
-      }' 2>/dev/null | curl -sS --max-time "$REQUEST_TIMEOUT_SECONDS" -X POST "${ENDPOINT}/api/v1/mcp-server" \
+      }' 2>/dev/null | curl -sS --max-time "$AUDIT_TIMEOUT_SECONDS" -X POST "${ENDPOINT}/api/v1/mcp-server" \
     -H "Content-Type: application/json" \
     -H "Accept: application/json" \
     "${AUTH_HEADER[@]}" \
     --data-binary @- > /dev/null 2>&1
-) &
+) >/dev/null 2>&1 &
+fi
 
 # 2. Scan tool output for PII/secrets (synchronous — returns context if PII found)
 OUTPUT_TEXT=""
@@ -246,7 +294,7 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
   SCAN_REQUEST=$(mktemp)
   SCAN_BODY=$(mktemp)
   SCAN_HEADERS=$(mktemp)
-  trap 'rm -f "$SCAN_REQUEST" "$SCAN_BODY" "$SCAN_HEADERS"' EXIT
+  trap 'rm -f "$SCAN_REQUEST" "$SCAN_BODY" "$SCAN_HEADERS"; axonflow_bootstrap_cleanup' EXIT
 
   # The output reaches jq on stdin and the body reaches curl as a file, never as
   # a command-line argument: an argument has a size limit, and the tool decides
@@ -268,6 +316,10 @@ if [ -n "$OUTPUT_TEXT" ] && [ "$OUTPUT_TEXT" != "null" ]; then
     axonflow_post_unchecked "the check request could not be built"
   fi
 
+  REQUEST_TIMEOUT_SECONDS=$(axonflow_budget_timeout "$CONFIGURED_TIMEOUT_SECONDS" 1)
+  if [ "$REQUEST_TIMEOUT_SECONDS" -lt 1 ]; then
+    axonflow_post_ungoverned "the hook's ${_AXONFLOW_HOOK_BUDGET_SECONDS}-second time budget ran out before the AxonFlow agent at ${ENDPOINT} could be asked"
+  fi
   SCAN_HTTP=$(curl -sS --max-time "$REQUEST_TIMEOUT_SECONDS" \
     -D "$SCAN_HEADERS" -o "$SCAN_BODY" -w '%{http_code}' \
     -X POST "${ENDPOINT}/api/v1/mcp-server" \
