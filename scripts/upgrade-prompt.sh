@@ -117,10 +117,11 @@ axonflow_throttle_active() {
 
 # _axonflow_auth_failure_cooldown_seconds
 #   This hook's auth-failure cooldown: AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS
-#   when it is a positive whole number of at most 7 digits, else 300.
+#   when it is a whole number of at most 7 digits (0 is no back-off, as in the
+#   other AxonFlow hook plugins), else 300.
 _axonflow_auth_failure_cooldown_seconds() {
   local cooldown="${AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS:-300}"
-  if ! [[ "$cooldown" =~ ^[0-9]{1,7}$ ]] || [ "$cooldown" -lt 1 ]; then
+  if ! [[ "$cooldown" =~ ^[0-9]{1,7}$ ]]; then
     cooldown=300
   fi
   # Base 10: a leading zero would otherwise read as octal in arithmetic.

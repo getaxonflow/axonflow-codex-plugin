@@ -652,7 +652,8 @@ test_401_env_override_cooldown() {
 # Test 13: malformed AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS overrides fall
 # back to 300s — a typo in the env var must NOT silently disable the
 # back-off (which is the bug-class that motivated the 401 throttle in the
-# first place). Covers: non-integer, negative, zero.
+# first place). Covers: non-integer and negative. Zero is no back-off
+# (test_cooldown_zero_is_no_back_off).
 # ---------------------------------------------------------------------------
 test_401_env_override_malformed_falls_back_to_default() {
   local cache; cache=$(mk_tmp_cache)
@@ -666,7 +667,7 @@ test_401_env_override_malformed_falls_back_to_default() {
   body=$(mktemp); echo '{"error":"unauthorized"}' >"$body"
   headers=$(mktemp); echo "" >"$headers"
 
-  for bad_value in "abc" "-5" "0"; do
+  for bad_value in "abc" "-5"; do
     rm -f "$cache/axonflow/throttle-until"
     export AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS="$bad_value"
     local before; before=$(date -u +%s)
@@ -811,7 +812,7 @@ test_cooldown_validation() {
   # shellcheck disable=SC1090
   . "$HELPER"
   local v
-  for v in "1:1" "1800:1800" "9999999:9999999" "10000000:300" "0:300" "abc:300" "-5:300" " 60:300" "1e3:300" "08:8" "0010:10" ":300"; do
+  for v in "1:1" "1800:1800" "9999999:9999999" "10000000:300" "0:0" "abc:300" "-5:300" " 60:300" "1e3:300" "08:8" "0010:10" ":300"; do
     export AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS="${v%%:*}"
     assert_eq "cooldown '${v%%:*}' → ${v##*:}" "${v##*:}" "$(_axonflow_auth_failure_cooldown_seconds 2>&1)"
   done
@@ -841,6 +842,35 @@ test_stamp_unreadable_mtime() {
 }
 
 # ---------------------------------------------------------------------------
+# A cooldown of 0 is no back-off, as in the other AxonFlow hook plugins: a 401
+# still blocks, and the stamp it writes gates nothing.
+# ---------------------------------------------------------------------------
+test_cooldown_zero_is_no_back_off() {
+  local cache; cache=$(mk_tmp_cache)
+  trap "rm -rf '$cache'" EXIT
+  export XDG_CACHE_HOME="$cache"
+  export AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS=0
+  # shellcheck disable=SC1090
+  . "$HELPER"
+  local body headers before epoch got
+  body=$(mktemp); echo '{"error":"unauthorized"}' >"$body"
+  headers=$(mktemp); echo "" >"$headers"
+  before=$(date -u +%s)
+  axonflow_handle_auth_failure "401" "$body" "$headers" 2>/dev/null
+  assert_eq "cooldown 0 → the 401 is still handled (rc 0)" "0" "$?"
+  epoch=$(awk 'NR==1 {print $1}' "$cache/axonflow/throttle-until" 2>/dev/null)
+  if [ -n "$epoch" ] && [ "$epoch" -ge "$before" ] && [ "$epoch" -le $((before + 1)) ]; then
+    assert_eq "cooldown 0 → the stamp's deadline is now" "yes" "yes"
+  else
+    assert_eq "cooldown 0 → the stamp's deadline is now" "yes" "no (epoch='$epoch' before=$before)"
+  fi
+  got=$(axonflow_governed_stamp) || got="none"
+  assert_eq "cooldown 0 → no stamp gates the next call" "none" "${got:-none}"
+  unset AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS
+  rm -f "$body" "$headers"
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 run_test "T1: 429 daily-quota envelope" test_429_daily_quota
@@ -861,6 +891,7 @@ run_test "T14: the stamp rules, each boundary on a pinned clock" test_stamp_rule
 run_test "T15: the 18-digit bound and the seconds an auth_failure note names" test_stamp_rules_digit_bound_and_remaining
 run_test "T16: the auth_failure cooldown's validation (base 10)" test_cooldown_validation
 run_test "T17: a stamp whose modification time cannot be read gates nothing" test_stamp_unreadable_mtime
+run_test "T18: a cooldown of 0 is no back-off" test_cooldown_zero_is_no_back_off
 
 echo
 echo "==============================="
