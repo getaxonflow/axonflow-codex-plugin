@@ -106,10 +106,6 @@ A `exec_command` is blocked mid-session because a production pattern matched. Th
 
 Solo developers and self-serve teams can use the free 90-day [Plugin Evaluation License](https://getaxonflow.com/plugins/evaluation-license?utm_source=readme_plugin_codex_eval) to validate hook behavior and policy packs.
 
-Organizations with a dated production requirement, written controls, an executive sponsor, and a technical owner can use AxonFlow's paid [Production Program](https://getaxonflow.com/design-partner?utm_source=readme_plugin_codex). It takes one scoped workflow into production over 60 or 75 days with Enterprise access, founder-led rollout support, upfront conversion pricing, and a fixed decision date.
-
-Public Design Partner pricing starts at $2,000; the Confidential Paid Pilot starts at $4,000. Prices are subject to eligibility and a signed agreement.
-
 ### See AxonFlow in Action
 
 Videos covering different angles of the platform:
