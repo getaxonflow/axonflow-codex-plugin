@@ -53,6 +53,12 @@ elif [ -n "${AXONFLOW_AUTH:-}" ]; then
   ENDPOINT="http://localhost:8080"
 else
   ENDPOINT="$ENDPOINT_DEFAULT"
+  # Test-harness override, as in pre-tool-check.sh: production code paths leave
+  # AXONFLOW_HARNESS unset and the endpoint stays pinned
+  # (tests/test-hooks.sh, the harness community-saas legs).
+  if [ "${AXONFLOW_HARNESS:-}" = "1" ] && [ -n "${AXONFLOW_HARNESS_AGENT_ENDPOINT:-}" ]; then
+    ENDPOINT="$AXONFLOW_HARNESS_AGENT_ENDPOINT"
+  fi
 fi
 TIMEOUT="${AXONFLOW_TIMEOUT_SECONDS:-15}"
 

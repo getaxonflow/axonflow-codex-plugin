@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Plugin runtime E2E: agent-callable MCP tools (W2)
 #
-# Exercises the 5 read-side governance tools the plugin exposes through
-# `mcp.json` -> /api/v1/mcp-server. Drives the platform's MCP server
+# Exercises the governance tools the plugin exposes through `mcp.json` ->
+# /api/v1/mcp-server: the read-side tools, and the override writes AxonFlow
+# v11.0.0 retired (create_override and delete_override answer a tool error
+# beginning "LEGACY_POLICY_WRITE_FROZEN: "). Drives the platform's MCP server
 # directly via JSON-RPC tools/list + tools/call — the same protocol the
 # Codex runtime speaks when an agent invokes one of these tools. Does
 # NOT import any AxonFlow client code.
@@ -21,6 +23,11 @@ set -uo pipefail
 : "${AXONFLOW_ENDPOINT:=http://localhost:8080}"
 : "${AXONFLOW_CLIENT_ID:=demo-client}"
 : "${AXONFLOW_CLIENT_SECRET:=demo-secret}"
+# The override writes refuse a session with no per-user identity before they
+# answer the retirement, so the session presents one. The agent keeps it only
+# when AXONFLOW_TRUST_IDENTITY_HEADERS=true is set on it (a test posture).
+: "${AXONFLOW_E2E_USER_EMAIL:=codex-runtime-e2e@axonflow-test.invalid}"
+OVERRIDE_FROZEN_PREFIX="LEGACY_POLICY_WRITE_FROZEN: "
 
 AUTH="Basic $(printf '%s:%s' "$AXONFLOW_CLIENT_ID" "$AXONFLOW_CLIENT_SECRET" | base64)"
 MCP_URL="$AXONFLOW_ENDPOINT/api/v1/mcp-server"
@@ -33,6 +40,7 @@ fi
 
 # Initialize MCP session
 INIT_RESP=$(curl -s -D /tmp/axonflow-mcp-headers.txt -X POST -H "Authorization: $AUTH" \
+  -H "X-User-Email: $AXONFLOW_E2E_USER_EMAIL" \
   -H "Content-Type: application/json" -H "Accept: application/json" \
   -H "MCP-Protocol-Version: 2025-06-18" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"axonflow-codex-runtime-e2e","version":"1.0.0"},"capabilities":{}}}' \
@@ -50,6 +58,7 @@ call_mcp() {
   local id="$1"
   local body="$2"
   curl -s -X POST -H "Authorization: $AUTH" \
+    -H "X-User-Email: $AXONFLOW_E2E_USER_EMAIL" \
     -H "Content-Type: application/json" -H "Accept: application/json" \
     -H "MCP-Protocol-Version: 2025-06-18" \
     -H "Mcp-Session-Id: $SESSION_ID" \
@@ -57,6 +66,29 @@ call_mcp() {
 }
 
 errors=0
+
+# assert_override_frozen <label> <response>: the retired write answered a tool
+# error beginning OVERRIDE_FROZEN_PREFIX. Any other answer, including one that
+# merely carries "jsonrpc", fails.
+assert_override_frozen() {
+  local label="$1" response="$2" is_error text
+  is_error=$(printf '%s' "$response" | jq -r '.result.isError // false' 2>/dev/null)
+  text=$(printf '%s' "$response" | jq -r '.result.content[0].text // ""' 2>/dev/null)
+  if [ "$is_error" = "true" ] && [ "${text#"$OVERRIDE_FROZEN_PREFIX"}" != "$text" ]; then
+    echo "PASS: $label answered the retired write: $(printf '%s' "$text" | cut -c1-100)..."
+    return 0
+  fi
+  echo "FAIL: $label did not answer a tool error beginning \"$OVERRIDE_FROZEN_PREFIX\" (isError=$is_error)"
+  echo "      response: $(printf '%s' "$response" | cut -c1-600)"
+  case "$text" in
+    *"scoped to an individual user"*)
+      echo "      The session reached the platform with no per-user identity: set"
+      echo "      AXONFLOW_TRUST_IDENTITY_HEADERS=true on the agent (a test posture)."
+      ;;
+  esac
+  errors=$((errors + 1))
+  return 1
+}
 
 # 1) tools/list — verify W2 governance tools + V1.1 list_recent_decisions
 # are advertised by the MCP server.
@@ -72,7 +104,7 @@ for tool in search_audit_events explain_decision list_recent_decisions create_ov
 done
 
 # 2) search_audit_events — empty audit log path
-echo "--- 2/6 tools/call search_audit_events ---"
+echo "--- 2/7 tools/call search_audit_events ---"
 RESP=$(call_mcp 3 '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search_audit_events","arguments":{"limit":5}}}')
 if echo "$RESP" | grep -q '"error"'; then
   echo "FAIL: search_audit_events returned error: $RESP"
@@ -82,7 +114,7 @@ else
 fi
 
 # 3) list_overrides — empty list expected on fresh stack
-echo "--- 3/6 tools/call list_overrides ---"
+echo "--- 3/7 tools/call list_overrides ---"
 RESP=$(call_mcp 4 '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_overrides","arguments":{}}}')
 if echo "$RESP" | grep -q '"error"'; then
   echo "FAIL: list_overrides returned error: $RESP"
@@ -93,7 +125,7 @@ fi
 
 # 4) explain_decision — unknown decision_id, expect ok response (server returns
 #    structured "no data" rather than RPC error)
-echo "--- 4/6 tools/call explain_decision (unknown id) ---"
+echo "--- 4/7 tools/call explain_decision (unknown id) ---"
 RESP=$(call_mcp 5 '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"explain_decision","arguments":{"decision_id":"runtime-e2e-no-such-decision"}}}')
 if echo "$RESP" | grep -q '"jsonrpc"'; then
   echo "PASS: explain_decision dispatched (response shape valid)"
@@ -102,26 +134,16 @@ else
   errors=$((errors + 1))
 fi
 
-# 5) create_override — missing override_reason → server-side validation error,
-#    not a transport error. The MCP layer wraps it as a tool result with isError.
-echo "--- 5/6 tools/call create_override (missing reason → server validation) ---"
-RESP=$(call_mcp 6 '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"create_override","arguments":{"policy_id":"sys_test_v1","policy_type":"static"}}}')
-if echo "$RESP" | grep -q '"jsonrpc"'; then
-  echo "PASS: create_override dispatched (server validation result returned)"
-else
-  echo "FAIL: create_override response malformed: $RESP"
-  errors=$((errors + 1))
-fi
+# 5) create_override — retired from AxonFlow v11.0.0: a complete request
+#    answers the tool error beginning "LEGACY_POLICY_WRITE_FROZEN: ".
+echo "--- 5/7 tools/call create_override (retired) ---"
+RESP=$(call_mcp 6 '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"create_override","arguments":{"policy_id":"sys_dangerous_destructive_fs","policy_type":"static","override_reason":"runtime-e2e retirement check"}}}')
+assert_override_frozen "create_override" "$RESP"
 
-# 6) delete_override — non-existent id
-echo "--- 6/7 tools/call delete_override (nonexistent id) ---"
+# 6) delete_override — retired as well, whatever the id.
+echo "--- 6/7 tools/call delete_override (retired) ---"
 RESP=$(call_mcp 7 '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"delete_override","arguments":{"override_id":"runtime-e2e-no-such-override"}}}')
-if echo "$RESP" | grep -q '"jsonrpc"'; then
-  echo "PASS: delete_override dispatched"
-else
-  echo "FAIL: delete_override response malformed: $RESP"
-  errors=$((errors + 1))
-fi
+assert_override_frozen "delete_override" "$RESP"
 
 # 7) list_recent_decisions (V1.1 #1982) — assert the over-cap path returns
 # the wrapped V1 envelope with upgrade.buy_url. Locks in
@@ -140,4 +162,4 @@ if [ "$errors" -gt 0 ]; then
   echo "FAIL: $errors scenario(s) failed"
   exit 1
 fi
-echo "PASS: runtime-mcp-tools — W2 + V1.1 tools advertised + dispatch correctly"
+echo "PASS: runtime-mcp-tools — the tools are advertised, the read-side tools dispatch, the retired writes answer LEGACY_POLICY_WRITE_FROZEN"

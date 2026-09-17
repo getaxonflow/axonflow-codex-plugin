@@ -1,16 +1,10 @@
 # list-overrides — runtime E2E
 
-**Asserts:** Drives the runtime to dispatch list_overrides; agent reports the count via SMOKE_RESULT.
+**Asserts:** a real Codex agent calls `list_overrides` (a read, unchanged on AxonFlow v11.0.0) and reports the count via SMOKE_RESULT; the count equals the count `list_overrides` answers when called directly. No override is seeded: from v11.0.0 none can be created (`create-override`).
 
-**Prereqs:** runtime CLI on PATH and authenticated; `jq`; live AxonFlow stack reachable at `$AXONFLOW_ENDPOINT` (default `http://localhost:8080`).
+**Prereqs:** `codex` CLI on PATH and authenticated; `jq`; `python3`; a live AxonFlow stack with its orchestrator (the tool reads through it), reachable at `$AXONFLOW_ENDPOINT` (default `http://localhost:8080`).
 
-**Required deployment posture:** the override endpoints are scoped to an individual user, so a per-user identity must reach the platform. On a default deployment it does not: `AXONFLOW_TRUST_IDENTITY_HEADERS` defaults to **off** (since 9.9.0), so the override seed fails and this test **fails** with the remediation printed (it used to skip silently and report green — #3062).
-
-```bash
-AXONFLOW_TRUST_IDENTITY_HEADERS=true   # on the AGENT, then restart it
-```
-
-Only enable it when every hop that can reach the agent asserts end-user identity from a validated source — see `docs/security/identity-header-trust.md` in axonflow-enterprise.
+**Deployment posture:** the test presents `X-User-Email` on the MCP session like the other override suites; the read answers with or without it.
 
 **Run:**
 ```bash

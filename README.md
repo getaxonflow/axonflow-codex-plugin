@@ -24,7 +24,7 @@ The gaps start surfacing the moment Codex runs anywhere near production:
 | SQL-injection detection on MCP queries | MCP server's problem | **30+ patterns available via `check_policy` MCP tool** |
 | Compliance-grade audit trail | Execution logs, not compliance-formatted | **Every governed terminal call recorded with policies, decision, duration** |
 | Decision explainability after a block | Generic hook failure | **`decision_id` in stderr; `explain_decision` MCP tool returns the full record** |
-| Self-service, time-bounded exceptions | Not available | **`create_override` with mandatory justification, fully audited** |
+| Changing a verdict after a block | Not available | **`explain_decision` names the policy; an administrator changes it in the organization's typed policy document (session overrides are retired from AxonFlow v11.0.0)** |
 
 The unique thing about Codex is that **not every tool can be hooked** — only terminal commands (`exec_command`) fire PreToolUse. This plugin is honest about that split, and uses a hybrid model that makes the boundary usable instead of fuzzy.
 
@@ -40,7 +40,7 @@ Codex governance has two sides. AxonFlow spans both, but they are enforced diffe
 | **Write, Edit, MCP tools** | Governance **skills** instruct Codex to call `check_policy` before acting | **Advisory.** The skill guides, Codex decides. Skills support implicit activation when the task matches. |
 | **Audit trail** | PostToolUse hook (terminal) + skills (others) | Automatic for terminal, skill-guided for everything else |
 
-Both paths converge on the **same explainability and override surface** — a blocked `exec_command` and a blocked-by-skill MCP write can both be investigated with `explain_decision` and unblocked with `create_override` when policy allows. That's what a senior platform engineer needs to evaluate this: the enforced path and the advisory path share one audit story.
+Both paths converge on the **same explainability surface** — a blocked `exec_command` and a blocked-by-skill MCP write can both be investigated with `explain_decision`. That's what a senior platform engineer needs to evaluate this: the enforced path and the advisory path share one audit story.
 
 ---
 
@@ -86,7 +86,7 @@ Governance skill activates (implicit or explicit via @axonflow)
 
 A developer tells Codex *"clean up old test data."* Codex selects `exec_command` and runs a destructive rm. That's the kind of mistake hooks exist for.
 
-**With the plugin:** PreToolUse fires before `exec_command` runs, the command is evaluated against 80+ policies (reverse shells, credential access, cloud metadata SSRF, path traversal, SQL-injection patterns), and blocked with exit 2 if it violates policy. The decision ID lands in stderr so Codex can call `explain_decision` and, if appropriate, `create_override`.
+**With the plugin:** PreToolUse fires before `exec_command` runs, the command is evaluated against 80+ policies (reverse shells, credential access, cloud metadata SSRF, path traversal, SQL-injection patterns), and blocked with exit 2 if it violates policy. The decision ID lands in stderr so Codex can call `explain_decision`.
 
 ### 2. The MCP query that returns too much (advisory path)
 
@@ -94,21 +94,17 @@ Codex queries a database MCP server for "recent orders" and gets back a response
 
 **With the plugin:** the `pii-scan` and `post-execute-audit` skills implicitly activate on MCP-returning tasks. Codex calls `check_output` against AxonFlow, which returns either a clean pass or PII-match details the model should honor. Every call is also auditable by running `search_audit_events` later.
 
-### 3. The converged unblock story
+### 3. The converged explain story
 
 A `exec_command` is blocked mid-session because a production pattern matched. The developer wants to proceed.
 
-**With the plugin:** Codex reads the decision ID from stderr, calls `explain_decision` to surface the policy family, and if the decision allows overrides, calls `create_override` with justification. The override is time-bounded and fully audited. Same workflow if the block came from an advisory skill path — converged UX, one audit story.
+**With the plugin:** Codex reads the decision ID from stderr and calls `explain_decision` to surface the policy family. From AxonFlow v11.0.0 a session override no longer changes a verdict (`create_override` answers `LEGACY_POLICY_WRITE_FROZEN`), so the way forward is a policy change: an administrator enables, disables or re-actions the control in the organization's typed policy document. Same workflow if the block came from an advisory skill path — converged UX, one audit story.
 
 ---
 
 ## Take a governed plugin rollout into production
 
-Solo developers and self-serve teams can use the free 90-day [Plugin Evaluation License](https://getaxonflow.com/plugins/evaluation-license?utm_source=readme_plugin_codex_eval) to validate hook behavior, policy packs, and override workflows.
-
-Organizations with a dated production requirement, written controls, an executive sponsor, and a technical owner can use AxonFlow's paid [Production Program](https://getaxonflow.com/design-partner?utm_source=readme_plugin_codex). It takes one scoped workflow into production over 60 or 75 days with Enterprise access, founder-led rollout support, upfront conversion pricing, and a fixed decision date.
-
-Public Design Partner pricing starts at $2,000; the Confidential Paid Pilot starts at $4,000. Prices are subject to eligibility and a signed agreement.
+Solo developers and self-serve teams can use the free 90-day [Plugin Evaluation License](https://getaxonflow.com/plugins/evaluation-license?utm_source=readme_plugin_codex_eval) to validate hook behavior and policy packs.
 
 ### See AxonFlow in Action
 
@@ -130,9 +126,9 @@ Outgrown Community on a real plugin install? Evaluation unlocks the capacity and
 | HITL approval gates | — | 25 pending, 24h expiry | Unlimited, 24h |
 | Evidence export (CSV/JSON) | — | 5,000 records · 14d window · 3/day | Unlimited |
 | Policy simulation | — | 300/day | Unlimited |
-| Session overrides (self-service unblock) | — | — | Enterprise-only |
+| Session overrides | — | — | Retired from AxonFlow v11.0.0 |
 
-Org-wide policies and session overrides are **Enterprise-only** — those are the actual upgrade triggers for plugin users.
+Org-wide policies are **Enterprise-only** — the actual upgrade trigger for plugin users.
 
 [Get a free Plugin Evaluation license](https://getaxonflow.com/plugins/evaluation-license?utm_source=readme_plugin_codex_eval)
 
@@ -298,11 +294,15 @@ If the canary says `mode=community-saas` after you ran Step 1, the plugin is sti
 
 ## Configure
 
-[Step 3](#step-3-point-the-plugin-at-the-platform) above covers `AXONFLOW_ENDPOINT`, `AXONFLOW_AUTH` and `AXONFLOW_MCP_AUTHORIZATION`. Two more environment variables worth knowing about:
+[Step 3](#step-3-point-the-plugin-at-the-platform) above covers `AXONFLOW_ENDPOINT`, `AXONFLOW_AUTH` and `AXONFLOW_MCP_AUTHORIZATION`. Three more environment variables worth knowing about:
 
 ```bash
 # Optional: longer request timeout for remote / VPN deployments
 export AXONFLOW_TIMEOUT_SECONDS=12
+
+# Optional: block tool calls when AxonFlow cannot answer, instead of running
+# them ungoverned with a notice (the default, "open"). See "Failure behavior".
+export AXONFLOW_FAIL_MODE=closed
 
 # Optional (Enterprise): admin-minted per-user token for a VERIFIED
 # {identity, role} — role-scoped access + per-developer audit attribution
@@ -311,11 +311,21 @@ export AXONFLOW_TIMEOUT_SECONDS=12
 export AXONFLOW_USER_TOKEN=<token minted by your org admin>
 ```
 
-**Fail behavior:**
-- AxonFlow unreachable (network) → fail-open, tool execution continues
-- AxonFlow auth/config error → fail-closed (exit 2), tool call blocked until config is fixed
-- Per-user token rejected by the platform (HTTP 401) → fail-closed (exit 2) while the token is configured — see below
-- PostToolUse failures → never block (audit and PII scan are best-effort)
+**Failure behavior** (the table in `scripts/pre-tool-check.sh` and `scripts/post-tool-audit.sh`):
+
+| AxonFlow's answer | PreToolUse (`exec_command`) | PostToolUse (never blocks) |
+|---|---|---|
+| A policy decision (a JSON-RPC result, on any HTTP status but 401 and 429) | enforced: a deny blocks (exit 2) | a deny or a redaction reaches Codex as a governance alert |
+| A rejected credential: HTTP 401, JSON-RPC `-32001`, or the cooldown a 401 starts (300 seconds unless `AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS` says otherwise) | **blocked** (exit 2), with or without a per-user token | governance alert: do not use the output |
+| A request limit: HTTP 429, or a Free-tier limit | **blocked** (exit 2) | governance alert |
+| A refusal (endpoint, credential or configuration): a 3xx redirect, a 4xx other than 408 without a JSON-RPC answer (a 413 names the size limit), or a JSON-RPC error other than `-32603` / `-32700`, with or without a message or a code | **blocked** (exit 2) | governance alert |
+| A policy result that decides nothing: no boolean `allowed`, or flagged `isError` | **blocked** (exit 2) | governance alert |
+| The check request for this call could not be built | **blocked** (exit 2) | governance alert |
+| No usable answer: unreachable, timeout, HTTP 408, 5xx, JSON-RPC `-32603` / `-32700`, an empty or unreadable body or one that is not exactly one JSON document, `jq` or `curl` missing | `AXONFLOW_FAIL_MODE` unset, empty or `open` (the default): runs **ungoverned**, with a `GOVERNANCE UNAVAILABLE` notice on stderr. Any other value, such as `closed`: **blocked** (exit 2) | `open`: the output passes, with the notice. Otherwise: governance alert |
+
+`AXONFLOW_FAIL_MODE` decides only the last row: a rejected credential, a limit, a refusal and a policy deny block whatever it says. Unset, empty or `open` (in any case) runs; any other value blocks. The 401 cooldown spares the agent a retry storm; it never lets a tool call run. While it holds, the block names the seconds left and its stamp file (`throttle-until` in the AxonFlow cache directory, which every AxonFlow plugin using that directory writes); after fixing the credential, delete that file to retry at once. Every value the agent sends that the hooks print or hand to Codex (an error or refusal text, a block reason, a decision id, a risk level, a policy count, an override id, the Free-tier wording and link, a redacted output) has its ASCII control characters removed; a redacted output keeps its newlines (all but trailing ones) and tabs and is not otherwise shortened, and an error or refusal text is also quoted as the agent's (`AxonFlow said: "..."`).
+
+**What the hooks cannot see on Codex.** Codex fires PreToolUse for an exec (`tool_name` `Bash`) but not for `write_stdin`, so a model can type a command into a shell that is already running with no PreToolUse check. An exec that is still running when the tool call returns gets no PostToolUse, so its output is not scanned. And `hooks/hooks.json` matches `Bash|exec_command|shell` only, so file edits through `apply_patch` are not checked. Tracked in #101.
 
 ### Per-user authorization token (`AXONFLOW_USER_TOKEN`)
 
@@ -488,9 +498,9 @@ Beyond the hook surface, the agent's MCP server exposes **15 tools** Codex can c
 | Tool | Purpose |
 |------|---------|
 | `explain_decision` | Return the full [DecisionExplanation](https://docs.getaxonflow.com/docs/governance/explainability/) for a decision ID |
-| `create_override` | Create a time-bounded, audit-logged session override (mandatory justification) |
-| `delete_override` | Revoke an active session override |
-| `list_overrides` | List active overrides scoped to the caller's tenant |
+| `create_override` | Retired from AxonFlow v11.0.0: answers `LEGACY_POLICY_WRITE_FROZEN` (creates a session override on older platforms) |
+| `delete_override` | Retired from AxonFlow v11.0.0: answers `LEGACY_POLICY_WRITE_FROZEN` (revokes one on older platforms) |
+| `list_overrides` | List the overrides recorded for the caller's tenant (a read, unchanged; from v11.0.0 an override changes no verdict) |
 
 ### Tenant identity & tier capability (5 — V1 Plugin Pro)
 
@@ -614,9 +624,9 @@ axonflow-codex-plugin/
 bash tests/e2e/smoke-block-context.sh
 ```
 
-The smoke scenario runs the plugin's `pre-tool-check.sh` against a running platform, feeds a SQLi-bearing Bash tool invocation through it, and asserts Codex's deny semantics (exit 2 + stderr prefix `AxonFlow policy violation`) carry the richer-context markers (`decision:`, `risk:`). Exits 0 with `SKIP:` if no stack is reachable.
+The smoke scenario runs the plugin's `pre-tool-check.sh` against a running platform, feeds a destructive Bash command (`rm -rf / --no-preserve-root`) through it, and asserts Codex's deny semantics (exit 2 + stderr prefix `AxonFlow policy violation`) carry the decision id (`decision:`). Exits 0 with `SKIP:` if no stack is reachable.
 
-For the broader validation story — explain-decision, override lifecycle, audit-filter parity, cache invalidation — see the [Codex integration guide](https://docs.getaxonflow.com/docs/integration/codex/).
+For the broader validation story — explain-decision, audit-filter parity, cache invalidation — see the [Codex integration guide](https://docs.getaxonflow.com/docs/integration/codex/).
 
 ---
 
