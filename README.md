@@ -128,7 +128,7 @@ Outgrown Community on a real plugin install? Evaluation unlocks the capacity and
 | Policy simulation | — | 300/day | Unlimited |
 | Session overrides | — | — | Retired from AxonFlow v11.0.0 |
 
-Org-wide policies are **Enterprise-only** — the actual upgrade trigger for plugin users.
+Org-wide policies (an org-root policy that binds every tenant) are capped at 20 on Community and 50 on Evaluation, unlimited on Enterprise.
 
 [Get a free Plugin Evaluation license](https://getaxonflow.com/plugins/evaluation-license?utm_source=readme_plugin_codex_eval)
 
