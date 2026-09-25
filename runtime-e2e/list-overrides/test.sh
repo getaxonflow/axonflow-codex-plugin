@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Codex runtime E2E: list-overrides OUTCOME TEST (W2 — rule #1)
+# Codex runtime E2E: list-overrides OUTCOME TEST.
+#
+# list_overrides is a read, unchanged on AxonFlow v11.0.0. From v11.0.0 no
+# override can be created, so none is seeded: the agent's reported count must
+# equal the count the platform answers directly.
 
 set -uo pipefail
 
@@ -9,35 +13,29 @@ source "$SCRIPT_DIR/../_lib/codex-runtime.sh"
 
 runtime_e2e_skip_if_unavailable
 
-trap codex_cleanup_mcp EXIT
-codex_register_mcp
-
-REASON_TAG="list-runtime-e2e-$(date +%s)-$RANDOM"
-echo "--- Seeding override via MCP path (same tenant codex sees) ---"
-
-SEED_ID=$(mcp_seed_override "sys_pii_email" "$REASON_TAG" 300)
-require_mcp_override_seed "$SEED_ID" || exit 1
-echo "--- Seeded override id: $SEED_ID ---"
-
+IDENTITY=(-H "X-User-Email: $AXONFLOW_E2E_USER_EMAIL")
 OUTPUT_FILE=$(mktemp -t axonflow-codex-list.XXXXXX)
-cleanup() {
-  mcp_cleanup_override "$SEED_ID"
-  codex_cleanup_mcp
-  rm -f "${OUTPUT_FILE:-}"
-}
-trap cleanup EXIT
+trap 'codex_cleanup_mcp; rm -f "$OUTPUT_FILE"' EXIT
+codex_register_mcp_with_identity
 
-PROMPT="Call the mcp__${MCP_SERVER_NAME}__list_overrides tool with no arguments. Look through the overrides array in the response and find the one whose override_reason field contains the substring '$REASON_TAG'. Output exactly the literal text SMOKE_RESULT: followed by a single-line JSON like SMOKE_RESULT: {\"found\":true,\"id\":\"...\"} if found, or SMOKE_RESULT: {\"found\":false} if not."
+errors=0
+
+SERVER_COUNT=$(mcp_override_count "${IDENTITY[@]}")
+if [ -z "$SERVER_COUNT" ]; then
+  echo "FAIL: list_overrides answered no count when called directly (is the orchestrator up?)"
+  exit 1
+fi
+echo "--- Server-side override count: $SERVER_COUNT ---"
+
+PROMPT="Call the mcp__${MCP_SERVER_NAME}__list_overrides tool with include_revoked=true. Output exactly the literal text SMOKE_RESULT: followed by a single-line JSON with the count field from the response: SMOKE_RESULT: {\"count\":<the count>}."
 
 echo "--- Running codex exec ... ---"
 codex_exec_capture "$PROMPT" "$OUTPUT_FILE"
 
-errors=0
-
 if assert_mcp_started "$OUTPUT_FILE" "list_overrides"; then
-  echo "PASS: Codex started the MCP tool call"
+  echo "PASS: Codex started the list_overrides MCP tool call"
 else
-  echo "FAIL: Codex did not start the MCP tool call"
+  echo "FAIL: Codex did not start the list_overrides MCP tool call"
   errors=$((errors + 1))
 fi
 
@@ -48,18 +46,14 @@ else
   errors=$((errors + 1))
 fi
 
-if assert_output_contains "$OUTPUT_FILE" '"found":true'; then
-  echo "PASS: agent's list_overrides returned the seeded override — outcome verified"
+SMOKE_LINE=$(smoke_line "$OUTPUT_FILE")
+AGENT_COUNT=$(printf '%s' "$SMOKE_LINE" | jq -r '.count // empty' 2>/dev/null)
+if [ -n "$AGENT_COUNT" ] && [ "$AGENT_COUNT" = "$SERVER_COUNT" ]; then
+  echo "PASS: the agent's list_overrides count ($AGENT_COUNT) equals the server's ($SERVER_COUNT) — outcome verified"
 else
   tail -10 "$OUTPUT_FILE" | sed 's/^/      /'
-  echo "FAIL: agent did NOT find the seeded override"
+  echo "FAIL: the agent reported count '${AGENT_COUNT}', the server answers $SERVER_COUNT"
   errors=$((errors + 1))
-fi
-
-if assert_output_contains "$OUTPUT_FILE" "$SEED_ID"; then
-  echo "PASS: agent's reply contains the exact seeded override id ($SEED_ID)"
-else
-  echo "WARN: agent reply did not echo the exact UUID"
 fi
 
 if [ "$errors" -gt 0 ]; then
@@ -68,4 +62,4 @@ if [ "$errors" -gt 0 ]; then
   exit 1
 fi
 echo ""
-echo "PASS: list-overrides outcome — Codex agent found a real seeded override end-to-end"
+echo "PASS: list-overrides — the Codex agent read the recorded overrides end-to-end"

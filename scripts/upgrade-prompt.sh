@@ -43,6 +43,46 @@ _AXONFLOW_AUTH_PROMPT_STAMP="${_AXONFLOW_CACHE_DIR}/auth-failure-prompt-last-sho
 # (canonical env-var name shared across the AxonFlow plugin family) can
 # override for testing/tuning without re-sourcing.
 
+# Text from the network is cleaned before it is printed (axonflow_clean_text,
+# scripts/lib/failure-posture.sh). The hooks source that file before this one;
+# a script that sources this file on its own gets it here.
+if ! command -v axonflow_clean_text >/dev/null 2>&1; then
+  _axonflow_prompt_dir="${BASH_SOURCE[0]%/*}"
+  if [ "$_axonflow_prompt_dir" = "${BASH_SOURCE[0]}" ]; then
+    _axonflow_prompt_dir="."
+  fi
+  # shellcheck source=./lib/failure-posture.sh
+  . "${_axonflow_prompt_dir}/lib/failure-posture.sh" 2>/dev/null
+  unset _axonflow_prompt_dir
+fi
+
+# The stamp rules (axonflow-enterprise#4249, comment 5684124176). The
+# throttle-until file is ONE line, `<epoch> <limit_type>`, and it is shared:
+# the other AxonFlow hook plugins (and, on Linux, the OpenClaw plugin) read and
+# write the same file. Its write and its format are unchanged here; what
+# changed is which stamps gate a governed call in these hooks:
+#   1. of the limit stamps, only a request-rate limit (daily_quota,
+#      per_minute) gates;
+#   2. a feature or object-count limit (feature_pro_only, active_policies,
+#      hitl_approvals_window, decision_list_size) shows its upgrade prompt
+#      when it is answered and gates nothing;
+#   3. a request-rate stamp is honoured for at most
+#      _AXONFLOW_LIMIT_STAMP_MAX_HONOUR_SECONDS after its file was written,
+#      then the hook asks the platform again (a hitl_approvals_window
+#      resets_at is a week out);
+#   4. a stamp whose file was written more than
+#      _AXONFLOW_STAMP_CLOCK_SKEW_SECONDS in the future counts as past the cap;
+#   5. a stamp of another type, or past the cap, is left on disk: another
+#      plugin that wrote it may still honour it;
+#   6. the auth_failure cooldown a 401 stamps gates for this hook's configured
+#      length (AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS, 300 by default), counted
+#      from when its file was written (rule 4's skew applies), not the deadline
+#      in the file;
+#   7. a deadline of more than 18 digits is malformed (it overflows bash
+#      arithmetic) and is cleared like any malformed stamp.
+_AXONFLOW_LIMIT_STAMP_MAX_HONOUR_SECONDS=300
+_AXONFLOW_STAMP_CLOCK_SKEW_SECONDS=60
+
 _axonflow_ensure_cache_dir() {
   if [ ! -d "$_AXONFLOW_CACHE_DIR" ]; then
     mkdir -p "$_AXONFLOW_CACHE_DIR" 2>/dev/null && chmod 0700 "$_AXONFLOW_CACHE_DIR" 2>/dev/null
@@ -51,16 +91,17 @@ _axonflow_ensure_cache_dir() {
 
 # axonflow_throttle_active
 #   Returns 0 if a throttle deadline is in effect (current epoch < stamp).
-#   Caller should skip outbound governed calls and fall open for this hook.
-#   On first hook of a new throttle period the function also re-emits a
-#   short stderr nudge so the operator sees they're in the back-off window.
+#   Caller should skip outbound governed calls and answer locally: both
+#   stamps (a Free-tier limit and the 401 auth_failure cooldown) block the
+#   tool call in pre-tool-check.sh and withhold the output in
+#   post-tool-audit.sh.
 axonflow_throttle_active() {
   if [ ! -f "$_AXONFLOW_THROTTLE_FILE" ]; then
     return 1
   fi
   local until_epoch
   until_epoch=$(awk 'NR==1 {print $1}' "$_AXONFLOW_THROTTLE_FILE" 2>/dev/null)
-  if [ -z "$until_epoch" ] || ! [[ "$until_epoch" =~ ^[0-9]+$ ]]; then
+  if [ -z "$until_epoch" ] || ! [[ "$until_epoch" =~ ^[0-9]{1,18}$ ]]; then
     rm -f "$_AXONFLOW_THROTTLE_FILE" 2>/dev/null
     return 1
   fi
@@ -74,16 +115,109 @@ axonflow_throttle_active() {
   return 1
 }
 
+# _axonflow_auth_failure_cooldown_seconds
+#   This hook's auth-failure cooldown: AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS
+#   when it is a whole number of at most 7 digits (0 is no back-off, as in the
+#   other AxonFlow hook plugins), else 300.
+_axonflow_auth_failure_cooldown_seconds() {
+  local cooldown="${AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS:-300}"
+  if ! [[ "$cooldown" =~ ^[0-9]{1,7}$ ]]; then
+    cooldown=300
+  fi
+  # Base 10: a leading zero would otherwise read as octal in arithmetic.
+  echo "$((10#$cooldown))"
+}
+
+# _axonflow_file_mtime <file>
+#   Prints the file's modification time as a UTC epoch (GNU stat, then BSD
+#   stat), or nothing when it cannot be read.
+_axonflow_file_mtime() {
+  local m
+  m=$(stat -c %Y "$1" 2>/dev/null) || m=""
+  if ! [[ "$m" =~ ^[0-9]+$ ]]; then
+    m=$(stat -f %m "$1" 2>/dev/null) || m=""
+  fi
+  [[ "$m" =~ ^[0-9]+$ ]] && echo "$m"
+}
+
+# axonflow_governed_stamp
+#   Prints the stamp that gates a governed call now, and returns 0 when one
+#   does: "auth_failure" (rule 6) or "limit" (a request-rate limit, rules 1, 3
+#   and 4). Prints nothing and returns 1 otherwise. An expired or malformed
+#   stamp is cleared, as axonflow_throttle_active clears it; a stamp of another
+#   type or past its cap is left on disk (rule 5). A file whose modification
+#   time cannot be read gates nothing.
+axonflow_governed_stamp() {
+  axonflow_throttle_active || return 1
+  local limit_type written now cap
+  limit_type=$(axonflow_throttle_reason)
+  case "$limit_type" in
+    auth_failure) cap=$(_axonflow_auth_failure_cooldown_seconds) ;;
+    daily_quota|per_minute) cap=$_AXONFLOW_LIMIT_STAMP_MAX_HONOUR_SECONDS ;;
+    *) return 1 ;;
+  esac
+  written=$(_axonflow_file_mtime "$_AXONFLOW_THROTTLE_FILE")
+  [ -n "$written" ] || return 1
+  now=$(date -u +%s)
+  if [ $((written - now)) -gt "$_AXONFLOW_STAMP_CLOCK_SKEW_SECONDS" ] ||
+     [ $((written + cap)) -le "$now" ]; then
+    return 1
+  fi
+  if [ "$limit_type" = "auth_failure" ]; then
+    echo auth_failure
+  else
+    echo limit
+  fi
+  return 0
+}
+
 # axonflow_throttle_reason
 #   Prints the reason recorded alongside the active throttle deadline
 #   ("auth_failure" for a 401 cooldown, the envelope's limit_type for
-#   quota throttles, empty when absent). Callers use this to branch on
-#   WHY governance is paused — e.g. pre-tool-check.sh fails CLOSED on an
-#   auth_failure throttle when a per-user token is configured
-#   (axonflow-enterprise#2944), instead of the default fall-open.
+#   quota throttles, empty when absent). Callers use this to name WHY the
+#   call is answered locally: pre-tool-check.sh blocks with the credential
+#   text for auth_failure and with the Free-tier text for a quota.
 axonflow_throttle_reason() {
   [ -f "$_AXONFLOW_THROTTLE_FILE" ] || return 0
   awk 'NR==1 {print $2}' "$_AXONFLOW_THROTTLE_FILE" 2>/dev/null
+}
+
+# axonflow_throttle_remaining_seconds
+#   Prints the seconds left before the throttle deadline passes (0 when there
+#   is no deadline, or it has passed). The file is shared: every AxonFlow
+#   plugin that uses this cache directory writes the same throttle-until, so
+#   a block can outlast a credential fix, or come from another plugin's 401.
+axonflow_throttle_remaining_seconds() {
+  local until_epoch now
+  until_epoch=$(awk 'NR==1 {print $1}' "$_AXONFLOW_THROTTLE_FILE" 2>/dev/null)
+  if ! [[ "$until_epoch" =~ ^[0-9]{1,18}$ ]]; then
+    echo 0
+    return 0
+  fi
+  now=$(date -u +%s)
+  if [ "$until_epoch" -le "$now" ]; then
+    echo 0
+    return 0
+  fi
+  local left=$((until_epoch - now)) written bound
+  # An auth_failure cooldown gates here only for this hook's configured length
+  # from when its file was written (rule 6), so the seconds named are those.
+  if [ "$(axonflow_throttle_reason)" = "auth_failure" ]; then
+    written=$(_axonflow_file_mtime "$_AXONFLOW_THROTTLE_FILE")
+    if [ -n "$written" ]; then
+      bound=$((written + $(_axonflow_auth_failure_cooldown_seconds) - now))
+      [ "$bound" -lt 0 ] && bound=0
+      [ "$bound" -lt "$left" ] && left=$bound
+    fi
+  fi
+  echo "$left"
+}
+
+# axonflow_auth_cooldown_note
+#   One sentence naming the auth-failure cooldown that is in effect: the
+#   seconds left and the file to delete to retry at once after the fix.
+axonflow_auth_cooldown_note() {
+  echo "Governed tool calls stay blocked for another $(axonflow_throttle_remaining_seconds) seconds (the auth-failure cooldown in ${_AXONFLOW_THROTTLE_FILE}, which every AxonFlow plugin using that cache directory writes); after fixing the credential, delete that file to retry at once."
 }
 
 # _axonflow_should_show_prompt_today
@@ -202,6 +336,7 @@ axonflow_handle_envelope_response() {
     deadline_epoch=$(($(date -u +%s) + 60))
   fi
   echo "$deadline_epoch $limit_type" >"$_AXONFLOW_THROTTLE_FILE" 2>/dev/null
+  _AXONFLOW_LAST_LIMIT_TYPE="$limit_type"
 
   # Emit the upgrade prompt at most once per UTC day so we don't spam every
   # hook fire. The throttle-until file ensures we still back off the network
@@ -214,8 +349,8 @@ axonflow_handle_envelope_response() {
       buy_url="https://getaxonflow.com/pricing/"
     fi
     {
-      echo "[AxonFlow] ${wording}"
-      echo "[AxonFlow] Upgrade: ${buy_url}"
+      echo "[AxonFlow] $(axonflow_clean_text "$wording")"
+      echo "[AxonFlow] Upgrade: $(axonflow_clean_text "$buy_url")"
     } >&2
   fi
   return 0
@@ -275,12 +410,9 @@ axonflow_handle_auth_failure() {
 
   _axonflow_ensure_cache_dir
   local cooldown deadline_epoch
-  cooldown="${AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS:-300}"
-  # Reject non-integer / negative overrides — fall back to 300s so a typo
-  # in the env var doesn't disable the back-off entirely.
-  if ! [[ "$cooldown" =~ ^[0-9]+$ ]] || [ "$cooldown" -lt 1 ]; then
-    cooldown=300
-  fi
+  # Non-integer, zero, negative or over-long overrides fall back to 300s, so
+  # a typo in the env var doesn't disable the back-off entirely.
+  cooldown=$(_axonflow_auth_failure_cooldown_seconds)
   deadline_epoch=$(($(date -u +%s) + cooldown))
   echo "$deadline_epoch auth_failure" >"$_AXONFLOW_THROTTLE_FILE" 2>/dev/null
 
@@ -289,7 +421,7 @@ axonflow_handle_auth_failure() {
   # off the network immediately even when the prompt is suppressed.
   if _axonflow_should_show_auth_prompt_today; then
     {
-      echo "[AxonFlow] Authentication failed (HTTP 401) against the AxonFlow agent. Tool governance is paused for 5 minutes."
+      echo "[AxonFlow] Authentication failed (HTTP 401) against the AxonFlow agent. Governed tool calls are blocked, and the agent is not asked again for ${cooldown} seconds, even after the credential is fixed, unless ${_AXONFLOW_THROTTLE_FILE} is deleted."
       echo "[AxonFlow] Refresh your credentials: https://getaxonflow.com/dashboard"
       # axonflow-enterprise#2944: when a per-user token was sent, name it as
       # a likely cause — the platform fails closed on a presented-but-invalid
@@ -308,6 +440,19 @@ axonflow_handle_auth_failure() {
 # named and the upgrade prompt shown, not run ungoverned (ruled 2026-09-14;
 # reversible by making the callers exit 0 again).
 AXONFLOW_LIMIT_DENY_REASON="AxonFlow governance blocked: this AxonFlow tenant has reached its Free-tier limit, so tool calls are blocked until the limit resets. Pro removes this cap: https://getaxonflow.com/pricing/"
+# axonflow_limit_deny_reason: the deny text for the limit the last envelope
+# named. A request-rate limit resets; a feature or object-count limit does not
+# reset with time, so its text does not say it will.
+axonflow_limit_deny_reason() {
+  case "${_AXONFLOW_LAST_LIMIT_TYPE:-}" in
+    daily_quota|per_minute|"")
+      echo "$AXONFLOW_LIMIT_DENY_REASON"
+      ;;
+    *)
+      echo "AxonFlow governance blocked: this AxonFlow tenant has reached a Free-tier limit ($(axonflow_clean_text "$_AXONFLOW_LAST_LIMIT_TYPE")), so this tool call is blocked. Pro removes this cap: https://getaxonflow.com/pricing/"
+      ;;
+  esac
+}
 AXONFLOW_LIMIT_POST_ALERT="GOVERNANCE ALERT: AxonFlow could not check this tool output (this AxonFlow tenant has reached its Free-tier limit). Do not use or reference the output in your response until it can be checked. Pro removes this cap: https://getaxonflow.com/pricing/"
 
 # axonflow_handle_envelope_text gives an envelope that arrived as a tool

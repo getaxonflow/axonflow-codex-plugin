@@ -490,8 +490,12 @@ test_401_auth_failure_stamps_throttle() {
 
   assert_eq "rc == 0 (401 detected)" "0" "$rc"
   assert_eq "stdout is empty" "0" "$(wc -c <"$stdout_out" | tr -d ' ')"
-  assert_contains "stderr names HTTP 401 + pause window" "$(cat "$stderr_out")" \
-    "Authentication failed (HTTP 401) against the AxonFlow agent. Tool governance is paused for 5 minutes."
+  # The cooldown spares the agent a retry storm; it never lets a tool call run,
+  # so the nudge says calls are blocked, not that governance is paused.
+  assert_contains "stderr names HTTP 401 + that tool calls are blocked" "$(cat "$stderr_out")" \
+    "Authentication failed (HTTP 401) against the AxonFlow agent. Governed tool calls are blocked, and the agent is not asked again for 300 seconds, even after the credential is fixed, unless "
+  assert_contains "stderr names the cooldown stamp file to delete" "$(cat "$stderr_out")" \
+    "axonflow/throttle-until is deleted."
   assert_contains "stderr points to dashboard for credential refresh" "$(cat "$stderr_out")" \
     "https://getaxonflow.com/dashboard"
 
@@ -648,7 +652,8 @@ test_401_env_override_cooldown() {
 # Test 13: malformed AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS overrides fall
 # back to 300s — a typo in the env var must NOT silently disable the
 # back-off (which is the bug-class that motivated the 401 throttle in the
-# first place). Covers: non-integer, negative, zero.
+# first place). Covers: non-integer and negative. Zero is no back-off
+# (test_cooldown_zero_is_no_back_off).
 # ---------------------------------------------------------------------------
 test_401_env_override_malformed_falls_back_to_default() {
   local cache; cache=$(mk_tmp_cache)
@@ -662,7 +667,7 @@ test_401_env_override_malformed_falls_back_to_default() {
   body=$(mktemp); echo '{"error":"unauthorized"}' >"$body"
   headers=$(mktemp); echo "" >"$headers"
 
-  for bad_value in "abc" "-5" "0"; do
+  for bad_value in "abc" "-5"; do
     rm -f "$cache/axonflow/throttle-until"
     export AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS="$bad_value"
     local before; before=$(date -u +%s)
@@ -689,6 +694,183 @@ test_401_env_override_malformed_falls_back_to_default() {
 }
 
 # ---------------------------------------------------------------------------
+# Tests 14-17: the stamp rules (axonflow-enterprise#4249, comment 5684124176),
+# on a pinned clock. A `date` first on PATH answers `date -u +%s` with
+# PINNED_NOW and passes every other call through, and the stamp file's
+# modification time is set exactly, so each boundary is tested on both sides.
+# ---------------------------------------------------------------------------
+REAL_DATE=$(command -v date)
+
+# pin_clock <cache dir>: puts the `date` stand-in on PATH for this subshell.
+pin_clock() {
+  mkdir -p "$1/bin"
+  cat >"$1/bin/date" <<SHIM
+#!/usr/bin/env bash
+if [ "\$*" = "-u +%s" ] && [ -n "\${PINNED_NOW:-}" ]; then echo "\$PINNED_NOW"; exit 0; fi
+exec "$REAL_DATE" "\$@"
+SHIM
+  chmod +x "$1/bin/date"
+  export PATH="$1/bin:$PATH"
+}
+
+# stamp_at <line> <mtime epoch>: writes the shared stamp with that mtime.
+stamp_at() {
+  mkdir -p "$XDG_CACHE_HOME/axonflow"
+  printf '%s\n' "$1" >"$XDG_CACHE_HOME/axonflow/throttle-until"
+  python3 -c 'import os,sys; t=float(sys.argv[2]); os.utime(sys.argv[1], (t, t))' "$XDG_CACHE_HOME/axonflow/throttle-until" "$2"
+}
+
+# gate_case <desc> <expected: auth_failure|limit|none> <line> <mtime offset from PINNED_NOW>
+gate_case() {
+  local got
+  stamp_at "$3" "$((PINNED_NOW + $4))"
+  got=$(axonflow_governed_stamp) || got="none"
+  [ -n "$got" ] || got="none"
+  assert_eq "$1" "$2" "$got"
+}
+
+test_stamp_rules_boundaries() {
+  local cache; cache=$(mk_tmp_cache)
+  trap "rm -rf '$cache'" EXIT
+  export XDG_CACHE_HOME="$cache"
+  unset AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS
+  pin_clock "$cache"
+  export PINNED_NOW=2000000000
+  # shellcheck disable=SC1090
+  . "$HELPER"
+  local n=$PINNED_NOW
+  # Rules 1 and 3: request-rate limits gate for at most 300 s from the mtime.
+  gate_case "daily_quota written 299 s ago → gates" limit "$((n + 86400)) daily_quota" -299
+  gate_case "daily_quota written 300 s ago → past the cap" none "$((n + 86400)) daily_quota" -300
+  gate_case "per_minute written now → gates" limit "$((n + 60)) per_minute" 0
+  gate_case "per_minute written 300 s ago → past the cap" none "$((n + 3600)) per_minute" -300
+  # The deadline still ends a stamp before the cap does.
+  gate_case "daily_quota with a passed deadline → gates nothing" none "$((n - 1)) daily_quota" 0
+  # Rule 2: feature and object-count limits gate nothing.
+  for t in feature_pro_only active_policies hitl_approvals_window decision_list_size; do
+    gate_case "$t written now → gates nothing" none "$((n + 604800)) $t" 0
+  done
+  gate_case "an unknown type written now → gates nothing" none "$((n + 3600)) something_new" 0
+  # Rule 4: 60 s of future skew is allowed, 61 s is past the cap.
+  gate_case "daily_quota written 60 s in the future → gates" limit "$((n + 3600)) daily_quota" 60
+  gate_case "daily_quota written 61 s in the future → past the cap" none "$((n + 3600)) daily_quota" 61
+  gate_case "auth_failure written 60 s in the future → gates" auth_failure "$((n + 604800)) auth_failure" 60
+  gate_case "auth_failure written 61 s in the future → past the cap" none "$((n + 604800)) auth_failure" 61
+  # Rule 6: auth_failure gates for this hook's cooldown from the mtime,
+  # whatever deadline the file carries.
+  gate_case "auth_failure (week-long deadline) written 299 s ago → gates" auth_failure "$((n + 604800)) auth_failure" -299
+  gate_case "auth_failure (week-long deadline) written 300 s ago → past the cooldown" none "$((n + 604800)) auth_failure" -300
+  gate_case "auth_failure with a millisecond deadline written 300 s ago → past the cooldown" none "$((n * 1000)) auth_failure" -300
+  export AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS=1800
+  gate_case "auth_failure written 1799 s ago, cooldown 1800 → gates" auth_failure "$((n + 604800)) auth_failure" -1799
+  gate_case "auth_failure written 1800 s ago, cooldown 1800 → past the cooldown" none "$((n + 604800)) auth_failure" -1800
+  unset AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS
+  # Rule 5: a stamp past its cap, or of another type, is left on disk.
+  stamp_at "$((n + 86400)) daily_quota" "$((n - 600))"
+  axonflow_governed_stamp >/dev/null
+  assert_eq "a daily_quota stamp past the cap is left on disk" "$((n + 86400)) daily_quota" "$(cat "$cache/axonflow/throttle-until" 2>/dev/null)"
+  stamp_at "$((n + 86400)) feature_pro_only" "$n"
+  axonflow_governed_stamp >/dev/null
+  assert_eq "a feature_pro_only stamp is left on disk" "$((n + 86400)) feature_pro_only" "$(cat "$cache/axonflow/throttle-until" 2>/dev/null)"
+}
+
+test_stamp_rules_digit_bound_and_remaining() {
+  local cache; cache=$(mk_tmp_cache)
+  trap "rm -rf '$cache'" EXIT
+  export XDG_CACHE_HOME="$cache"
+  unset AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS
+  pin_clock "$cache"
+  export PINNED_NOW=2000000000
+  # shellcheck disable=SC1090
+  . "$HELPER"
+  local n=$PINNED_NOW
+  # Rule 7: 18 digits is a deadline; 19 overflows bash arithmetic and is malformed.
+  gate_case "an 18-digit auth_failure deadline written now → gates" auth_failure "999999999999999999 auth_failure" 0
+  gate_case "a 19-digit auth_failure deadline → malformed, gates nothing" none "9999999999999999999 auth_failure" 0
+  stamp_at "9999999999999999999 auth_failure" "$n"
+  assert_eq "a 19-digit deadline → nothing printed (no integer error)" "" "$(axonflow_governed_stamp 2>&1)"
+  assert_eq "a 19-digit deadline is cleared like any malformed stamp" "no" "$([ -f "$cache/axonflow/throttle-until" ] && echo yes || echo no)"
+  gate_case "a 19-digit daily_quota deadline → malformed, gates nothing" none "9999999999999999999 daily_quota" 0
+  stamp_at "9999999999999999999 auth_failure" "$n"
+  assert_eq "remaining seconds for a 19-digit deadline → 0" "0" "$(axonflow_throttle_remaining_seconds)"
+  # The seconds named for auth_failure are this hook's cooldown from the mtime.
+  stamp_at "$((n + 604800)) auth_failure" "$((n - 100))"
+  assert_eq "remaining for a week-long auth_failure written 100 s ago → 200" "200" "$(axonflow_throttle_remaining_seconds)"
+  stamp_at "$((n * 1000)) auth_failure" "$n"
+  assert_eq "remaining for a millisecond auth_failure deadline written now → 300" "300" "$(axonflow_throttle_remaining_seconds)"
+  assert_contains "the cooldown note names 300 seconds, not the millisecond deadline" "$(axonflow_auth_cooldown_note)" "for another 300 seconds"
+  stamp_at "$((n + 50)) auth_failure" "$n"
+  assert_eq "remaining for an auth_failure deadline before the cooldown ends → the deadline (50)" "50" "$(axonflow_throttle_remaining_seconds)"
+  stamp_at "$((n + 86400)) daily_quota" "$n"
+  assert_eq "remaining for a daily_quota stamp is its deadline (unchanged)" "86400" "$(axonflow_throttle_remaining_seconds)"
+}
+
+test_cooldown_validation() {
+  local cache; cache=$(mk_tmp_cache)
+  trap "rm -rf '$cache'" EXIT
+  export XDG_CACHE_HOME="$cache"
+  # shellcheck disable=SC1090
+  . "$HELPER"
+  local v
+  for v in "1:1" "1800:1800" "9999999:9999999" "10000000:300" "0:0" "abc:300" "-5:300" " 60:300" "1e3:300" "08:8" "0010:10" ":300"; do
+    export AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS="${v%%:*}"
+    assert_eq "cooldown '${v%%:*}' → ${v##*:}" "${v##*:}" "$(_axonflow_auth_failure_cooldown_seconds 2>&1)"
+  done
+  unset AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS
+  assert_eq "cooldown unset → 300" "300" "$(_axonflow_auth_failure_cooldown_seconds)"
+}
+
+test_stamp_unreadable_mtime() {
+  local cache; cache=$(mk_tmp_cache)
+  trap "rm -rf '$cache'" EXIT
+  export XDG_CACHE_HOME="$cache"
+  # shellcheck disable=SC1090
+  . "$HELPER"
+  local now; now=$(date -u +%s)
+  mkdir -p "$cache/axonflow" "$cache/nostat"
+  printf '#!/bin/sh\nexit 1\n' >"$cache/nostat/stat"
+  chmod +x "$cache/nostat/stat"
+  echo "$((now + 3600)) daily_quota" >"$cache/axonflow/throttle-until"
+  local got
+  got=$(PATH="$cache/nostat:$PATH" axonflow_governed_stamp) || got="none"
+  assert_eq "a daily_quota stamp whose mtime cannot be read → gates nothing" "none" "${got:-none}"
+  echo "$((now + 3600)) auth_failure" >"$cache/axonflow/throttle-until"
+  got=$(PATH="$cache/nostat:$PATH" axonflow_governed_stamp) || got="none"
+  assert_eq "an auth_failure stamp whose mtime cannot be read → gates nothing" "none" "${got:-none}"
+  got=$(axonflow_governed_stamp) || got="none"
+  assert_eq "the same auth_failure stamp with stat available → gates" "auth_failure" "$got"
+}
+
+# ---------------------------------------------------------------------------
+# A cooldown of 0 is no back-off, as in the other AxonFlow hook plugins: a 401
+# still blocks, and the stamp it writes gates nothing.
+# ---------------------------------------------------------------------------
+test_cooldown_zero_is_no_back_off() {
+  local cache; cache=$(mk_tmp_cache)
+  trap "rm -rf '$cache'" EXIT
+  export XDG_CACHE_HOME="$cache"
+  export AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS=0
+  # shellcheck disable=SC1090
+  . "$HELPER"
+  local body headers before epoch got
+  body=$(mktemp); echo '{"error":"unauthorized"}' >"$body"
+  headers=$(mktemp); echo "" >"$headers"
+  before=$(date -u +%s)
+  axonflow_handle_auth_failure "401" "$body" "$headers" 2>/dev/null
+  assert_eq "cooldown 0 → the 401 is still handled (rc 0)" "0" "$?"
+  epoch=$(awk 'NR==1 {print $1}' "$cache/axonflow/throttle-until" 2>/dev/null)
+  if [ -n "$epoch" ] && [ "$epoch" -ge "$before" ] && [ "$epoch" -le $((before + 1)) ]; then
+    assert_eq "cooldown 0 → the stamp's deadline is now" "yes" "yes"
+  else
+    assert_eq "cooldown 0 → the stamp's deadline is now" "yes" "no (epoch='$epoch' before=$before)"
+  fi
+  got=$(axonflow_governed_stamp) || got="none"
+  assert_eq "cooldown 0 → no stamp gates the next call" "none" "${got:-none}"
+  unset AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS
+  rm -f "$body" "$headers"
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 run_test "T1: 429 daily-quota envelope" test_429_daily_quota
@@ -705,6 +887,11 @@ run_test "T10: non-401 status codes ignored by auth-failure helper" test_non_401
 run_test "T11: 401 nudge is once-per-UTC-day" test_401_once_per_day_stamp
 run_test "T12: AXONFLOW_AUTH_FAILURE_COOLDOWN_SECONDS env override honored" test_401_env_override_cooldown
 run_test "T13: malformed cooldown env override falls back to 300s" test_401_env_override_malformed_falls_back_to_default
+run_test "T14: the stamp rules, each boundary on a pinned clock" test_stamp_rules_boundaries
+run_test "T15: the 18-digit bound and the seconds an auth_failure note names" test_stamp_rules_digit_bound_and_remaining
+run_test "T16: the auth_failure cooldown's validation (base 10)" test_cooldown_validation
+run_test "T17: a stamp whose modification time cannot be read gates nothing" test_stamp_unreadable_mtime
+run_test "T18: a cooldown of 0 is no back-off" test_cooldown_zero_is_no_back_off
 
 echo
 echo "==============================="
