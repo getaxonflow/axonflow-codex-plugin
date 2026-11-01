@@ -79,6 +79,10 @@ AXONFLOW_TEST_PLUGIN_ROOT="$STAGE_DIR" bash "$PLUGIN_DIR/tests/test-hosted-link.
   && pass "staged Hosted device link and credential setup" \
   || fail "staged Hosted device link and credential setup"
 
+bash "$PLUGIN_DIR/tests/test-hosted-e2e-observer.sh" >"$LOG_DIR/hosted-e2e-observer.log" 2>&1 \
+  && pass "Hosted real-stack proof requires an observed Agent decision" \
+  || fail "Hosted real-stack proof accepted a missing Agent decision"
+
 # 3. Validate hooks.json hook command paths resolve to staged scripts.
 HOOKS_JSON="$STAGE_DIR/hooks/hooks.json"
 if [ ! -f "$HOOKS_JSON" ]; then
