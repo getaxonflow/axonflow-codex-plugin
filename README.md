@@ -320,7 +320,8 @@ export AXONFLOW_USER_TOKEN=<token minted by your org admin>
 ```
 
 **Fail behavior:**
-- AxonFlow unreachable (network) → fail-open, tool execution continues
+- Hosted AxonFlow unreachable (network) → tool call blocked
+- Self-hosted AxonFlow unreachable (network) → fail-open, tool execution continues
 - AxonFlow auth/config error → fail-closed (exit 2), tool call blocked until config is fixed
 - Per-user token rejected by the platform (HTTP 401) → fail-closed (exit 2) while the token is configured — see below
 - PostToolUse failures → never block (audit and PII scan are best-effort)

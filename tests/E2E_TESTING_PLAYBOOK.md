@@ -151,7 +151,7 @@ Expected: "axonflow: policy enforcement, PII detection, audit trails" alongside 
 
 | # | Scenario | Expected | Verified? |
 |---|---|---|---|
-| 5.1 | Kill AxonFlow while plugin is connected | Bash hooks fail-open (commands execute). MCP tools return errors. Skills produce no results. | Not tested |
+| 5.1 | Kill self-hosted AxonFlow while plugin is connected | Bash hooks fail-open (commands execute). Hosted hooks block without an Agent decision. MCP tools return errors. Skills produce no results. | Not tested |
 | 5.2 | Invalid auth in enterprise mode | Bash hooks fail-closed (exit 2). MCP tools unavailable. | Not tested |
 
 ---
