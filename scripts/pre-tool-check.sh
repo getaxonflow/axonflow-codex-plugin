@@ -10,8 +10,8 @@
 #   Exit 2 = block (tool execution prevented)
 #   Other non-zero = non-blocking error (tool proceeds)
 #
-# Fail-open: network failures → exit 0 (allow)
-# Fail-closed: auth/config errors → exit 2 (block)
+# Hosted fails closed when the Agent cannot return a usable decision.
+# Self-hosted keeps its historical fail-open behavior for transport/server faults.
 
 # A Hosted hook without its dependencies cannot check a governed call.
 case "${AXONFLOW_ENDPOINT:-}" in
@@ -225,31 +225,21 @@ fi
 # envelope's resets_at deadline. While a hosted Free-tier limit holds, the
 # tool call is BLOCKED with the limit named (the upgrade prompt was surfaced
 # when the throttle landed): over the cap is deny, not governance off (ruled
-# 2026-09-14; reversible here). The 401 pause (auth_failure) falls open.
-#
-# #2944 exception — auth_failure throttle with a per-user token configured
-# fails CLOSED: the 401 that stamped the throttle is the platform rejecting
-# the presented X-User-Token (fail-closed contract, enterprise#2929). If we
-# fell open here, setting a garbage AXONFLOW_USER_TOKEN would turn
-# governance OFF for the whole cooldown window — a trivial bypass. Denying
-# locally (no network round-trip) preserves the back-off AND the fail-closed
-# posture. Unconfigured behavior is unchanged (fall open, as always).
+# 2026-09-14; reversible here). An auth-failure cooldown also blocks locally:
+# a revoked device credential must never turn governance off for five minutes.
 if axonflow_throttle_active; then
-  if [ -n "${AXONFLOW_USER_TOKEN:-}" ] && [ "$(axonflow_throttle_reason)" = "auth_failure" ]; then
-    echo "AxonFlow governance blocked: the AxonFlow agent rejected authentication (HTTP 401) and an auth-failure cooldown is active. ${USER_TOKEN_HINT}" >&2
-    exit 2
+  if [ "$(axonflow_throttle_reason)" = "auth_failure" ]; then
+    HINT_SUFFIX=""
+    if [ -n "${AXONFLOW_USER_TOKEN:-}" ]; then HINT_SUFFIX=" ${USER_TOKEN_HINT}"; fi
+    axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow agent rejected authentication (HTTP 401) and an auth-failure cooldown is active.${HINT_SUFFIX}"
   fi
-  if [ "$(axonflow_throttle_reason)" != "auth_failure" ]; then
-    axonflow_pre_deny "$AXONFLOW_LIMIT_DENY_REASON"
-  fi
-  exit 0
+  axonflow_pre_deny "$AXONFLOW_LIMIT_DENY_REASON"
 fi
 
 # Call AxonFlow check_policy via MCP server.
 #
-# Issue #1545 Direction 3: fail OPEN on any network-level failure (timeout,
-# DNS failure, connection refused, 5xx). Only auth/config errors reported
-# by AxonFlow fail closed (see the JSONRPC_ERROR handling below).
+# Self-hosted retains issue #1545's transport fail-open behavior. Hosted
+# requires an observed Agent decision before allowing a governed tool call.
 #
 # V1 Plugin Pro: capture HTTP status + headers + body separately so the
 # envelope handler can detect 429 / 403 and stamp the throttle deadline
@@ -281,9 +271,11 @@ HTTP_CODE=$(curl -sS --max-time "$REQUEST_TIMEOUT_SECONDS" \
     }')" 2>/dev/null)
 CURL_EXIT=$?
 
-# Any curl-level failure (exit != 0) means the network call failed —
-# timeout, DNS failure, connection refused, TCP reset. Fail open.
+# A failed transfer cannot authorize a Hosted tool call.
 if [ "$CURL_EXIT" -ne 0 ]; then
+  if [ "$AXONFLOW_MODE" = "community-saas" ]; then
+    axonflow_pre_deny "AxonFlow governance blocked: the Hosted Agent could not be reached, so this tool call is blocked."
+  fi
   exit 0
 fi
 
@@ -295,31 +287,36 @@ if axonflow_handle_envelope_response "$HTTP_CODE" "$PRECHECK_BODY" "$PRECHECK_HE
   axonflow_pre_deny "$AXONFLOW_LIMIT_DENY_REASON"
 fi
 
-# axonflow-enterprise#2275: stamp a 5-minute throttle on HTTP 401 so a
-# tight retry loop can't fire 716 × 401 in 24h (the production incident
-# that motivated this). Caller falls open so the user's tool isn't held
-# up while they refresh credentials.
-#
-# #2944 exception — when a per-user token was SENT, the 401 is the platform
-# failing closed on a presented-but-invalid X-User-Token. Fail CLOSED (block
-# the tool call) instead of falling open: a fall-open here would let anyone
-# bypass governance by exporting a garbage token. The throttle stamp above
-# still short-circuits subsequent calls locally (they deny via the
-# auth_failure-throttle guard, no retry storm).
+# Stamp a 5-minute cooldown on HTTP 401 to prevent retry storms, then block
+# this call. The cooldown branch above blocks subsequent calls locally.
 if axonflow_handle_auth_failure "$HTTP_CODE" "$PRECHECK_BODY" "$PRECHECK_HEADERS"; then
+  HINT_SUFFIX=""
   if [ -n "${AXONFLOW_USER_TOKEN:-}" ]; then
-    echo "AxonFlow governance blocked: the AxonFlow agent at ${ENDPOINT} rejected authentication (HTTP 401), so this tool call is blocked. ${USER_TOKEN_HINT}" >&2
-    exit 2
+    HINT_SUFFIX=" ${USER_TOKEN_HINT}"
   fi
-  exit 0
+  axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow agent at ${ENDPOINT} rejected authentication (HTTP 401), so this tool call is blocked.${HINT_SUFFIX}"
+fi
+
+# Payment, quota, and other refusal statuses without a recognized envelope
+# still refuse the call. A Hosted server fault also cannot authorize it.
+if [ "$HTTP_CODE" != "200" ]; then
+  case "$HTTP_CODE" in
+    5??) if [ "$AXONFLOW_MODE" != "community-saas" ]; then exit 0; fi ;;
+  esac
+  axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow agent refused the policy check (HTTP ${HTTP_CODE:-unknown}), so this tool call is blocked."
 fi
 
 RESPONSE=$(cat "$PRECHECK_BODY")
 
-# Empty body from an otherwise-successful curl should also fail open
-# (ambiguous: could be 204 No Content, could be a weird proxy).
+# An empty or malformed Hosted response contains no policy decision.
 if [ -z "$RESPONSE" ]; then
+  if [ "$AXONFLOW_MODE" = "community-saas" ]; then
+    axonflow_pre_deny "AxonFlow governance blocked: the Hosted Agent returned no policy decision, so this tool call is blocked."
+  fi
   exit 0
+fi
+if [ "$AXONFLOW_MODE" = "community-saas" ] && ! echo "$RESPONSE" | jq -e 'type == "object"' >/dev/null 2>&1; then
+  axonflow_pre_deny "AxonFlow governance blocked: the Hosted Agent returned an invalid policy response, so this tool call is blocked."
 fi
 
 # Check for JSON-RPC error responses and apply the fail-open / fail-closed
@@ -354,7 +351,10 @@ if [ -n "$JSONRPC_ERROR" ]; then
       exit 2
       ;;
     -32603|-32700)
-      # Transient or server-side — fail open.
+      if [ "$AXONFLOW_MODE" = "community-saas" ]; then
+        axonflow_pre_deny "AxonFlow governance blocked: the Hosted Agent returned an error (${JSONRPC_ERROR}, code ${JSONRPC_CODE}), so this tool call is blocked."
+      fi
+      # Self-hosted preserves its historical fail-open behavior.
       exit 0
       ;;
     *)
@@ -364,14 +364,23 @@ if [ -n "$JSONRPC_ERROR" ]; then
   esac
 fi
 
+# Hosted accepts only the JSON-RPC reply to this check_policy request. A
+# detached result-shaped body must not turn a missing decision into allow.
+if [ "$AXONFLOW_MODE" = "community-saas" ] && ! echo "$RESPONSE" | jq -e \
+  '.jsonrpc == "2.0" and .id == "hook-pre" and (.result | type) == "object" and (.result.content | type) == "array" and .result.content[0].type == "text"' >/dev/null 2>&1; then
+  axonflow_pre_deny "AxonFlow governance blocked: the Hosted Agent returned an invalid policy response, so this tool call is blocked."
+fi
+
 # Parse the MCP response to get the tool result
 TOOL_RESULT=$(echo "$RESPONSE" | jq -r '.result.content[0].text // empty' 2>/dev/null || echo "")
 if [ -z "$TOOL_RESULT" ]; then
   # A JSON-RPC result with no tool result carries no decision: fail closed.
-  # Anything else (no result object at all) is an unexpected format: fail
-  # open for robustness, as before.
+  # A Hosted response without a result is not an authorization.
   if echo "$RESPONSE" | jq -e 'has("result")' >/dev/null 2>&1; then
     axonflow_pre_deny "AxonFlow governance blocked: the AxonFlow agent returned a policy result without a decision, so this tool call is blocked."
+  fi
+  if [ "$AXONFLOW_MODE" = "community-saas" ]; then
+    axonflow_pre_deny "AxonFlow governance blocked: the Hosted Agent returned no policy decision, so this tool call is blocked."
   fi
   exit 0
 fi

@@ -42,9 +42,9 @@ for kind in allow deny missing transport; do
   echo "PASS observer $kind"
 done
 
-# Exercise the real hook's benign fail-open branch with a protected linked
+# Exercise the real hook's Hosted fail-closed branch with a protected linked
 # credential and a refused local proxy. The release observer must see the
-# transport error and no Agent decision.
+# transport error, no Agent decision, and a blocked tool call.
 mkdir -p "$WORK/home" "$WORK/config" "$WORK/bin"
 cp "$ROOT/runtime-e2e/hosted-link/observe-curl.sh" "$WORK/bin/curl"
 chmod 0700 "$WORK/bin/curl"
@@ -53,6 +53,7 @@ cat > "$WORK/config/hosted-codex.json" <<'EOF'
 EOF
 chmod 0600 "$WORK/config/hosted-codex.json"
 rm -f "$WORK/decision" "$WORK/transport"
+set +e
 env -u AXONFLOW_ENDPOINT -u AXONFLOW_AUTH -u AXONFLOW_MCP_AUTHORIZATION \
   HOME="$WORK/home" AXONFLOW_CONFIG_DIR="$WORK/config" AXONFLOW_TELEMETRY=off \
   PATH="$WORK/bin:$PATH" AXONFLOW_E2E_REAL_CURL="$(command -v curl)" \
@@ -64,6 +65,10 @@ env -u AXONFLOW_ENDPOINT -u AXONFLOW_AUTH -u AXONFLOW_MCP_AUTHORIZATION \
     "$ROOT/scripts/hosted-env.sh" "$ROOT/scripts/pre-tool-check.sh" \
     '{"tool_name":"exec_command","tool_input":{"command":"echo axonflow-hosted-link-probe"}}' \
   >"$WORK/hook.out" 2>"$WORK/hook.err"
+hook_exit=$?
+set -e
+test "$hook_exit" -eq 2
 test -s "$WORK/transport"
 test ! -e "$WORK/decision"
-echo 'PASS linked hook transport failure cannot satisfy release proof'
+rg -q 'Hosted Agent could not be reached' "$WORK/hook.err"
+echo 'PASS linked hook transport failure blocks and cannot satisfy release proof'

@@ -249,9 +249,8 @@ _axonflow_should_show_auth_prompt_today() {
 #
 #   Background — axonflow-enterprise#2275: a single source IP fired 716 ×
 #   401 in 24h against /api/v1/audit/tool-call. The envelope handler above
-#   only fires on 429 / 403, so a 401 falls through to the JSON-RPC parser,
-#   exits 0 (fail-open), and the next tool call immediately re-fires the
-#   same 401. This helper closes that gap.
+#   only fires on 429 / 403. This helper stamps the cooldown; the pre-tool
+#   hook blocks during it so a revoked credential never permits a tool call.
 #
 #   Returns 0 iff the response is HTTP 401; 1 otherwise. The body_file +
 #   headers_file arguments are accepted for API parity with
@@ -289,7 +288,7 @@ axonflow_handle_auth_failure() {
   # off the network immediately even when the prompt is suppressed.
   if _axonflow_should_show_auth_prompt_today; then
     {
-      echo "[AxonFlow] Authentication failed (HTTP 401) against the AxonFlow agent. Tool governance is paused for 5 minutes."
+      echo "[AxonFlow] Authentication failed (HTTP 401) against the AxonFlow agent. Requests are paused for 5 minutes; governed tool calls remain blocked."
       echo "[AxonFlow] Refresh your credentials: https://getaxonflow.com/dashboard"
       # axonflow-enterprise#2944: when a per-user token was sent, name it as
       # a likely cause — the platform fails closed on a presented-but-invalid

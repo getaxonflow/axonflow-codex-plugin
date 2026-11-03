@@ -9,7 +9,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PLUGIN_DIR="${AXONFLOW_TEST_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 PRE_HOOK="$PLUGIN_DIR/scripts/pre-tool-check.sh"
 POST_HOOK="$PLUGIN_DIR/scripts/post-tool-audit.sh"
 
@@ -172,7 +172,61 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # New in v0.2.1: additional trigger strings for the v0.2.0 decision
         # matrix that went untested — see tests/test-hooks.sh comments on
         # each FAIL_CLOSED_* and FAIL_OPEN_* case below.
-        if 'FAIL_CLOSED_AUTH' in statement or 'AUTH_ERROR' in statement:
+        if 'REVOKED_AUTH_401' in statement:
+            self.send_response(401)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'jsonrpc': '2.0', 'id': body.get('id'), 'error': {'code': -32001, 'message': 'Authentication required'}}).encode())
+            return
+        elif 'PAYMENT_REQUIRED_402' in statement:
+            self.send_response(402)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(b'{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32042,\"message\":\"Payment required\",\"data\":{\"error\":\"hosted_payment_required\"}}}')
+            return
+        elif 'FORBIDDEN_403_BARE' in statement:
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(b'{\"error\":\"forbidden\"}')
+            return
+        elif 'MONTHLY_429_BARE' in statement:
+            self.send_response(429)
+            self.end_headers()
+            self.wfile.write(b'{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32043,\"message\":\"Monthly hosted governance allowance reached\"}}')
+            return
+        elif 'SERVER_500' in statement:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(b'{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal server error\"}}')
+            return
+        elif 'MALFORMED_200' in statement:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'not-json')
+            return
+        elif 'EMPTY_200' in statement:
+            self.send_response(200)
+            self.end_headers()
+            return
+        elif 'NO_RESULT_200' in statement:
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'jsonrpc':'2.0','id':body.get('id')}).encode())
+            return
+        elif 'WRONG_ID_200' in statement:
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'jsonrpc':'2.0','id':'different','result':{'content':[{'type':'text','text':json.dumps({'allowed':True})}]}}).encode())
+            return
+        elif 'MISSING_JSONRPC_200' in statement:
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'id':body.get('id'),'result':{'content':[{'type':'text','text':json.dumps({'allowed':True})}]}}).encode())
+            return
+        elif 'FAIL_CLOSED_AUTH' in statement or 'AUTH_ERROR' in statement:
             resp = {'jsonrpc': '2.0', 'id': body.get('id'), 'error': {'code': -32001, 'message': 'Authentication failed'}}
         elif 'FAIL_CLOSED_METHOD' in statement:
             resp = {'jsonrpc': '2.0', 'id': body.get('id'), 'error': {'code': -32601, 'message': 'Method not found'}}
@@ -462,7 +516,7 @@ fi
 # Over the Community SaaS Free-tier cap a tool call is BLOCKED (exit 2), with
 # the upgrade prompt still printed (ruled 2026-09-14): a result without a
 # boolean 'allowed', a result with isError, the cap envelope on HTTP 429, and a
-# quota throttle all block. The 401 auth_failure pause is unchanged.
+# quota throttle and 401 auth_failure pause all block.
 for trig in LIMIT_ENVELOPE_RESULT RESULT_NO_ALLOWED HTTP_429_ENVELOPE; do
     echo ""
     echo "--- PreToolUse: $trig → exit 2 (block) ---"
@@ -506,7 +560,7 @@ else
 fi
 
 echo ""
-echo "--- PreToolUse: auth_failure throttle active, no user token → exit 0 (unchanged) ---"
+echo "--- PreToolUse: auth_failure throttle active, no user token → exit 2 ---"
 if [ "${1:-}" = "--live" ]; then
     echo "  SKIP: mock-only trigger"
     ((PASS++)) || true
@@ -518,8 +572,62 @@ else
     echo '{"tool_name":"Bash","tool_input":{"command":"echo hi"}}' | env -u AXONFLOW_USER_TOKEN XDG_CACHE_HOME="$TMP_CAP" "$PRE_HOOK" >/dev/null 2>"$TMP_CAP/stderr"
     EXIT_CODE=$?
     set -e
-    assert_eq "Exit code is 0 during the 401 pause" "0" "$EXIT_CODE"
+    assert_eq "Exit code is 2 during the 401 pause" "2" "$EXIT_CODE"
+    assert_contains "Auth cooldown blocks tool calls" "$(cat "$TMP_CAP/stderr")" "governance blocked"
     rm -rf "$TMP_CAP"
+fi
+
+echo ""
+echo "--- Hosted PreToolUse: live HTTP refusal and missing-decision matrix ---"
+if [ "${1:-}" = "--live" ]; then
+    echo "  SKIP: Hosted failure matrix uses the local mock server"
+    ((PASS++)) || true
+else
+    TMP_HOSTED=$(mktemp -d -t axonflow-hosted-failure.XXXXXX)
+    mkdir -p "$TMP_HOSTED/config" "$TMP_HOSTED/cache"
+    printf '%s\n' '{"tenant_id":"cs_12345678-1234-1234-1234-123456789abc","secret":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","expires_at":"2099-01-01T00:00:00Z","endpoint":"https://try.getaxonflow.com"}' > "$TMP_HOSTED/config/hosted-codex.json"
+    chmod 0700 "$TMP_HOSTED/config"
+    chmod 0600 "$TMP_HOSTED/config/hosted-codex.json"
+    run_hosted_hook() {
+        local statement="$1" cache_name="$2" agent_endpoint="${3:-$ENDPOINT}"
+        mkdir -p "$TMP_HOSTED/cache/$cache_name"
+        set +e
+        printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}\n' "$statement" | \
+            env -u AXONFLOW_ENDPOINT -u AXONFLOW_AUTH -u AXONFLOW_USER_TOKEN -u AXONFLOW_MCP_AUTHORIZATION \
+                HOME="$TMP_HOSTED" AXONFLOW_CONFIG_DIR="$TMP_HOSTED/config" \
+                XDG_CACHE_HOME="$TMP_HOSTED/cache/$cache_name" \
+                AXONFLOW_HARNESS=1 AXONFLOW_HARNESS_AGENT_ENDPOINT="$agent_endpoint" \
+                AXONFLOW_TELEMETRY=off AXONFLOW_PLUGIN_VERSION_CHECK=off \
+                "$PRE_HOOK" >"$TMP_HOSTED/stdout" 2>"$TMP_HOSTED/stderr"
+        HOSTED_EXIT=$?
+        set -e
+        HOSTED_STDERR=$(cat "$TMP_HOSTED/stderr")
+        HOSTED_STDOUT=$(cat "$TMP_HOSTED/stdout")
+    }
+
+    run_hosted_hook 'REVOKED_AUTH_401 test' revoked
+    assert_eq "revoked credential HTTP 401 blocks" "2" "$HOSTED_EXIT"
+    assert_contains "401 block identifies authentication" "$HOSTED_STDERR" "rejected authentication (HTTP 401)"
+    assert_file_exists "401 cooldown stamped" "$TMP_HOSTED/cache/revoked/axonflow/throttle-until"
+    run_hosted_hook 'echo next-call' revoked
+    assert_eq "revoked credential cooldown blocks next call" "2" "$HOSTED_EXIT"
+    assert_contains "cooldown identifies authentication" "$HOSTED_STDERR" "auth-failure cooldown is active"
+
+    for scenario in PAYMENT_REQUIRED_402 FORBIDDEN_403_BARE MONTHLY_429_BARE HTTP_429_ENVELOPE SERVER_500 \
+                    MALFORMED_200 EMPTY_200 NO_RESULT_200 WRONG_ID_200 MISSING_JSONRPC_200 \
+                    FAIL_OPEN_INTERNAL FAIL_OPEN_PARSE; do
+        run_hosted_hook "$scenario test" "$scenario"
+        assert_eq "Hosted $scenario blocks" "2" "$HOSTED_EXIT"
+        assert_contains "Hosted $scenario explains block" "$HOSTED_STDERR" "governance blocked"
+        assert_empty "Hosted $scenario has no allow output" "$HOSTED_STDOUT"
+    done
+    run_hosted_hook 'echo normal-allow' allowed
+    assert_eq "Hosted observed allow succeeds" "0" "$HOSTED_EXIT"
+    assert_empty "Hosted observed allow is silent" "$HOSTED_STDOUT"
+    run_hosted_hook 'echo transport-refusal' transport 'http://127.0.0.1:1'
+    assert_eq "Hosted transport refusal blocks" "2" "$HOSTED_EXIT"
+    assert_contains "Hosted transport refusal explains block" "$HOSTED_STDERR" "Hosted Agent could not be reached"
+    rm -rf "$TMP_HOSTED"
 fi
 
 echo ""
