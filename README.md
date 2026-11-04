@@ -225,6 +225,22 @@ Follow the [Getting Started](https://docs.getaxonflow.com/docs/getting-started/)
 
 **No LLM provider keys are required** — Codex handles every LLM call; AxonFlow only evaluates policies and records audit trails.
 
+#### Marketplace release archive
+
+After downloading the versioned `axonflow-codex-plugin-1.10.0-install.tar.gz` release asset, extract it to an empty directory and register that directory with Codex:
+
+```bash
+mkdir axonflow-codex-marketplace
+tar -xzf axonflow-codex-plugin-1.10.0-install.tar.gz -C axonflow-codex-marketplace
+codex plugin marketplace add "$PWD/axonflow-codex-marketplace"
+codex plugin list --marketplace axonflow
+codex plugin add axonflow@axonflow
+```
+
+The archive contains `.agents/plugins/marketplace.json` and the installable plugin under `plugins/axonflow`. The `codex plugin` commands discover and install that exact layout. The repository's `.codex-plugin/marketplace.json` remains a metadata source for the archive builder; adding the source checkout directly as a marketplace is not the release install path.
+
+For a local archive, run `python3 scripts/package-marketplace.py /tmp/axonflow-codex-plugin-1.10.0-install.tar.gz` and `bash tests/test-marketplace-install.sh /tmp/axonflow-codex-plugin-1.10.0-install.tar.gz` before distributing it.
+
 #### 2.1 Clone the plugin
 
 ```bash
