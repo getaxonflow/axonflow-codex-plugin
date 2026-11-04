@@ -17,8 +17,8 @@
 #
 # Also pins the #2944 fail-closed contract: with a token configured, an
 # HTTP 401 from the agent → exit 2 + a stderr diagnostic naming the per-user
-# token (never its value); unconfigured 401 keeps the pre-existing #2275
-# cooldown fall-open (exit 0). And pins that the hooks NEVER leak the token
+# token (never its value); unconfigured 401 also blocks during the #2275
+# cooldown. And pins that the hooks NEVER leak the token
 # value to stdout or stderr.
 #
 # Stdlib-only (bash + python3 + jq).
@@ -321,13 +321,13 @@ else
   fail "cooldown behavior wrong: exit=$SECOND_EXIT new-requests=$(( $(captured_count) - BEFORE_COUNT ))"
 fi
 
-# Unconfigured 401 → unchanged #2275 contract: cooldown stamped, exit 0.
+# Unconfigured 401 → cooldown stamped and tool call blocked.
 : > "$CAP"
 run_hook "$PRE_HOOK" none
-if [ "$HOOK_EXIT" -eq 0 ]; then
-  pass "401 with NO token configured keeps the pre-existing cooldown fall-open (exit 0)"
+if [ "$HOOK_EXIT" -eq 2 ] && grep -q 'rejected authentication (HTTP 401)' "$HOOK_STDERR"; then
+  pass "401 with NO token configured blocks with a clear diagnostic"
 else
-  fail "unconfigured 401 exited $HOOK_EXIT (expected 0 — behavior change for unconfigured users!)"
+  fail "unconfigured 401 exited $HOOK_EXIT (expected 2 and an auth diagnostic)"
 fi
 
 echo ""

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+## [1.10.0] - pending release
+
+- Hosted first run now directs the user to verified Portal signup and an explicit device link. `scripts/hosted-link.mjs` generates and stores a per-installation credential locally after browser approval; `scripts/hosted-env.sh` exports it for Codex's static MCP headers without printing the secret. Hooks no longer call anonymous `/api/v1/register` and block unlinked governed calls. Existing protected credentials and explicit self-hosted configuration retain precedence.
+- The pre-tool hook now blocks a governed call when its linked credential is revoked or otherwise returns HTTP 401, including during the five-minute retry cooldown. Hosted also blocks on transport failures, payment and quota refusals, server errors, and responses without a valid policy decision. Self-hosted transport and server-fault behavior retains its existing fail-open setting.
+
 ## [1.9.0] - 2026-09-14: a policy answer without a decision now blocks the tool call, and the MCP session sends its credential with the Basic scheme
 
 ### Fixed

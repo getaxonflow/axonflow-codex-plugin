@@ -305,17 +305,11 @@ cmd_status() {
   local cfg_present="no"
   [ -f "$file" ] && cfg_present="yes"
 
-  # Client ID — needed by the buyer to paste into Stripe Checkout's
-  # custom field at /pro. Source: try-registration.json (the file
-  # community-saas-bootstrap.sh writes after auto-registration). The
-  # JSON key is still `tenant_id` on disk (file-format compat with
-  # installed base from v1.4.0 and earlier); we read it under its old
-  # key but surface it under the new `client_id` label per v1.5.0
-  # terminology rebrand (see CHANGELOG v1.5.0). If the registration
-  # file is missing, the user hasn't bootstrapped yet (or lost the
-  # file — the recover flow can re-mint one).
-  local tenant_file="${AXONFLOW_CONFIG_DIR:-$HOME/.config/axonflow}/try-registration.json"
-  local client_id="(not registered yet — first agent call will auto-register, or run \`scripts/recover.sh request\`)"
+  # Surface the linked client ID, falling back to the legacy registration
+  # file for existing installations. Both formats retain `tenant_id` on disk.
+  local tenant_file="${AXONFLOW_CONFIG_DIR:-$HOME/.config/axonflow}/hosted-codex.json"
+  [ -e "$tenant_file" ] || tenant_file="${AXONFLOW_CONFIG_DIR:-$HOME/.config/axonflow}/try-registration.json"
+  local client_id="(not linked yet — open the verified Hosted Portal and run scripts/hosted-link.mjs)"
   if [ -f "$tenant_file" ] && command -v jq >/dev/null 2>&1; then
     local found
     found=$(jq -r '.tenant_id // empty' "$tenant_file" 2>/dev/null || true)

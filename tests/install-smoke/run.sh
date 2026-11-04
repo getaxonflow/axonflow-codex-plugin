@@ -54,6 +54,8 @@ cp -p "$PLUGIN_DIR/hooks/hooks.json" "$STAGE_DIR/hooks/" \
   || fail "missing hooks/hooks.json"
 cp -p "$PLUGIN_DIR/scripts/"*.sh "$STAGE_DIR/scripts/" \
   || fail "missing scripts/*.sh"
+cp -p "$PLUGIN_DIR/scripts/hosted-link.mjs" "$STAGE_DIR/scripts/" \
+  || fail "missing scripts/hosted-link.mjs"
 # scripts/lib/ holds shared sourceable helpers (license-token.sh as of the
 # V1 paid tier wire-up). pre-tool-check, post-tool-audit, mcp-auth-headers,
 # and recover.sh source from this directory at runtime, so it MUST be part
@@ -66,11 +68,20 @@ chmod +x "$STAGE_DIR/scripts/"*.sh
 for f in .codex-plugin/plugin.json .mcp.json hooks/hooks.json \
          scripts/pre-tool-check.sh scripts/post-tool-audit.sh \
          scripts/telemetry-ping.sh scripts/mcp-auth-headers.sh \
-         scripts/recover.sh scripts/lib/license-token.sh; do
+         scripts/recover.sh scripts/lib/license-token.sh \
+         scripts/hosted-link.mjs scripts/hosted-env.sh; do
   if [ -f "$STAGE_DIR/$f" ]; then pass "staged $f"
   else fail "missing $f after stage"
   fi
 done
+
+AXONFLOW_TEST_PLUGIN_ROOT="$STAGE_DIR" bash "$PLUGIN_DIR/tests/test-hosted-link.sh" \
+  && pass "staged Hosted device link and credential setup" \
+  || fail "staged Hosted device link and credential setup"
+
+bash "$PLUGIN_DIR/tests/test-hosted-e2e-observer.sh" >"$LOG_DIR/hosted-e2e-observer.log" 2>&1 \
+  && pass "Hosted real-stack proof requires an observed Agent decision" \
+  || fail "Hosted real-stack proof accepted a missing Agent decision"
 
 # 3. Validate hooks.json hook command paths resolve to staged scripts.
 HOOKS_JSON="$STAGE_DIR/hooks/hooks.json"
