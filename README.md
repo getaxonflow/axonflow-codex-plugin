@@ -227,11 +227,11 @@ Follow the [Getting Started](https://docs.getaxonflow.com/docs/getting-started/)
 
 #### Marketplace release archive
 
-After downloading the versioned `axonflow-codex-plugin-1.10.0-install.tar.gz` release asset, extract it to an empty directory and register that directory with Codex:
+After downloading the versioned `axonflow-codex-plugin-1.10.0.tar.gz` release asset, extract it to an empty directory and register that directory with Codex:
 
 ```bash
 mkdir axonflow-codex-marketplace
-tar -xzf axonflow-codex-plugin-1.10.0-install.tar.gz -C axonflow-codex-marketplace
+tar -xzf axonflow-codex-plugin-1.10.0.tar.gz -C axonflow-codex-marketplace
 codex plugin marketplace add "$PWD/axonflow-codex-marketplace"
 codex plugin list --marketplace axonflow
 codex plugin add axonflow@axonflow
